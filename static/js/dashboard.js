@@ -31,8 +31,8 @@ $(document).ready(function () {
         $('#new-dashboard').css("width", "calc(100% - 97px)")
     }
     else {
-        $('#new-dashboard').css("transform", "translate(205px)")
-        $('#new-dashboard').css("width", "calc(100% - 215px)")
+        $('#new-dashboard').css("transform", "translate(170px)")
+        $('#new-dashboard').css("width", "calc(100% - 180px)")
     }
 
     panelContainer = document.getElementById('panel-container');
@@ -44,7 +44,6 @@ $(document).ready(function () {
         theme = Cookies.get('theme');
         $('body').attr('data-theme', theme);
     }
-    displayNavbar();
     $('.theme-btn').on('click', themePickerHandler);
     setupEventHandlers();
     dbId = getDashboardId();
@@ -62,6 +61,11 @@ $(document).ready(function () {
     getDashboardData();
 
     setTimePicker();
+
+    $(`.dbSet-textareaContainer .copy`).tooltip({
+        delay: { show: 0, hide: 300 },
+        trigger: 'hover'
+    });
 })
 $(document).mouseup(function (e) {
   var popWindows = $("#panel-dropdown-modal");
@@ -87,6 +91,20 @@ window.addEventListener('resize', function (event) {
     displayPanels();
     resetPanelLocationsHorizontally();
 });
+$(`.dbSet-textareaContainer .copy`).click(function() {
+    $(this).tooltip('dispose');
+    $(this).attr('title', 'Copied!').tooltip('show');
+    navigator.clipboard.writeText($(`.dbSet-jsonModelData`).val())
+        .then(() => {
+            setTimeout(() => {
+                $(this).tooltip('dispose');
+                $(this).attr('title', 'Copy').tooltip({
+                    delay: { show: 0, hide: 300 },
+                    trigger: 'hover',
+                  });
+            }, 1000);
+        })
+});
 
 function recalculatePanelWidths(){
     localPanels.map(localPanel => {
@@ -111,7 +129,7 @@ function updateDashboard() {
     let tempPanels = JSON.parse(JSON.stringify(localPanels));
     for (let i = 0; i < tempPanels.length; i++)
         delete tempPanels[i].queryRes;
-    fetch('/api/dashboards/update',
+    return fetch('/api/dashboards/update',
         {
             method: 'POST',
             body: JSON.stringify({
@@ -128,20 +146,26 @@ function updateDashboard() {
         }
     )
         .then(res => {
+            if (res.status === 409) {
+                showToast('Dashboard name already exists');
+                throw new Error('Dashboard name already exists');
+            }    
             if (res.status == 200) {
                 displayDashboardName();
                 showToast('Dashboard Updated Successfully');
+                return true;
             }
             return res.json();
         })
-        .then(data => console.log(data));
+        .catch(error => {
+            console.error(error);
+            return false;
+        });
 }
 
 function refreshDashboardHandler() {
     if ($('#viewPanel-container').css('display') !== 'none') {
         displayPanelView(panelIndex);
-    } else if($('.panelEditor-container').css('display') !== 'none'){
-        runQueryBtnHandler()
     }
     else {
         for (let i = 0; i < localPanels.length; i++) {
@@ -212,7 +236,7 @@ function handlePanelRemove(panelId) {
     function showPrompt(panelId) {
         $('.popupOverlay, .popupContent').addClass('active');
         $('#delete-btn-panel').on("click", function () {
-            deletePanel(panelId); 
+            deletePanel(panelId);
             $('.popupOverlay, .popupContent').removeClass('active');
         });
         $('#cancel-btn-panel, .popupOverlay').on("click", function () {
@@ -238,11 +262,29 @@ function handlePanelRemove(panelId) {
     }
 }
 
-function handleDescriptionTooltip(panelId,description) {
+function handleDescriptionTooltip(panelId,description,searchText) {
     const panelInfoCorner = $(`#panel${panelId} .panel-info-corner`);
     const panelDescIcon = $(`#panel${panelId} .panel-info-corner #panel-desc-info`);
     panelInfoCorner.show();
-    panelDescIcon.attr('title',description); 
+    let tooltipText = '';
+
+    // Check if description is provided
+    if (description) {
+        tooltipText += `Description: ${description}`;
+    }
+
+    // Check if both description and searchText are provided, add line break if needed
+    if (description && searchText) {
+        tooltipText += '\n';
+    }
+
+    // Check if searchText is provided
+    if (searchText) {
+        tooltipText += `Query: ${searchText}`;
+    }
+
+    panelDescIcon.attr('title', tooltipText);
+
     panelDescIcon.tooltip({
         delay: { show: 0, hide: 300 },
         trigger: 'hover'});
@@ -369,12 +411,18 @@ function renderDuplicatePanel(duplicatedPanelIndex) {
         let responseDiv = `<div class="big-number-display-container"></div>
         <div id="empty-response"></div><div id="corner-popup"></div>`
         panEl.append(responseDiv)
-
-        if (localPanel.queryRes)
-            runPanelAggsQuery(localPanel.queryData, localPanel.panelId, localPanel.chartType, localPanel.dataType, localPanel.panelIndex, localPanel.queryRes);
-        else
-            runPanelAggsQuery(localPanel.queryData, localPanel.panelId, localPanel.chartType, localPanel.dataType, localPanel.panelIndex);
-    } else if (localPanel.chartType == 'Pie Chart' || localPanel.chartType == 'Bar Chart') {
+        if(localPanel.queryType ==='metrics') {
+            if (localPanel.queryRes)
+                runMetricsQuery(localPanel.queryData, localPanel.panelId, localPanel, localPanel.queryRes)
+            else
+                runMetricsQuery(localPanel.queryData, localPanel.panelId, localPanel)
+        }else{
+            if (localPanel.queryRes)
+                runPanelAggsQuery(localPanel.queryData, localPanel.panelId, localPanel.chartType, localPanel.dataType, localPanel.panelIndex, localPanel.queryRes);
+            else
+                runPanelAggsQuery(localPanel.queryData, localPanel.panelId, localPanel.chartType, localPanel.dataType, localPanel.panelIndex);
+        }
+        } else if (localPanel.chartType == 'Pie Chart' || localPanel.chartType == 'Bar Chart') {
         // generic for both bar and pie chartTypes.
         let panEl = $(`#panel${panelId} .panel-body`)
         let responseDiv = `<div id="empty-response"></div><div id="corner-popup"></div>`
@@ -424,9 +472,9 @@ async function getDashboardData() {
     if (localPanels != undefined) {
         updateTimeRangeForPanels();
         recalculatePanelWidths();
-        displayPanels();
         resetPanelLocationsHorizontally();
         setRefreshItemHandler();
+        refreshDashboardHandler();
     }
 }
 
@@ -434,7 +482,7 @@ function updateTimeRangeForPanels() {
     localPanels.forEach(panel => {
         delete panel.queryRes;
         if(panel.queryData) {
-            if((panel.chartType === "Line Chart" || panel.chartType === "number") && panel.queryType === "metrics") {
+            if(panel.chartType === "Line Chart" || panel.queryType === "metrics") {
                 datePickerHandler(panel.queryData.start, panel.queryData.end, panel.queryData.start)
                 panel.queryData.start = filterStartDate.toString();
                 panel.queryData.end = filterEndDate.toString();
@@ -487,12 +535,12 @@ function displayPanels() {
         });
         $(`#panel${idpanel} .panel-header p`).html(localPanel.name);
 
-        if (localPanel.description) {
-            handleDescriptionTooltip(idpanel,localPanel.description)
+        if (localPanel.description || (localPanel.queryData && localPanel.queryData.searchText)) {
+            handleDescriptionTooltip(idpanel, localPanel.description, localPanel.queryData ? localPanel.queryData.searchText : '');
         } else {
             $(`#panel${idpanel} .panel-info-corner`).hide();
         }
-        
+
         let panelElement = document.getElementById(`panel${idpanel}`);
         panelElement.style.position = "absolute";
         panelElement.style.height = localPanel.gridpos.h + "px";
@@ -540,14 +588,17 @@ function displayPanels() {
 
             $('.big-number-display-container').show();
             if (localPanel.queryType === "metrics"){
+
                 if (localPanel.queryRes){
-                    runMetricsQuery(localPanel.queryData, localPanel.panelId, localPanel.chartType, localPanel.queryRes)
+                    delete localPanel.queryData.startEpoch
+                    delete localPanel.queryData.endEpoch
+                    runMetricsQuery(localPanel.queryData, localPanel.panelId, localPanel, localPanel.queryRes)
                 }
                 else {
                     //remove startEpoch from from localPanel.queryData
                     delete localPanel.queryData.startEpoch
                     delete localPanel.queryData.endEpoch
-                    runMetricsQuery(localPanel.queryData, localPanel.panelId, localPanel.chartType)
+                    runMetricsQuery(localPanel.queryData, localPanel.panelId, localPanel)
                 }
             }else {
                 if (localPanel.queryRes)
@@ -565,7 +616,7 @@ function displayPanels() {
                 runPanelAggsQuery(localPanel.queryData, localPanel.panelId, localPanel.chartType, localPanel.dataType, localPanel.panelIndex, localPanel.queryRes);
             else
                 runPanelAggsQuery(localPanel.queryData, localPanel.panelId, localPanel.chartType, localPanel.dataType, localPanel.panelIndex);
-        } else 
+        } else
             allResultsDisplayed--;
     })
     if(allResultsDisplayed === 0) {
@@ -603,8 +654,8 @@ function displayPanelView(panelIndex) {
     panelElement.style.width = "100%";
 
     handlePanelRemove(localPanel.panelId);
-    if (localPanel.description) {
-        handleDescriptionTooltip(localPanel.panelId,localPanel.description);
+    if (localPanel.description||localPanel.queryData.searchText) {
+        handleDescriptionTooltip(localPanel.panelId,localPanel.description,localPanel.queryData.searchText);
     } else {
         $(`#panel${panelId} .panel-info-corner`).hide();
     }
@@ -673,12 +724,12 @@ function displayPanel(panelIndex) {
         $("#" + `panel${panelId}` + " .dropdown-style").toggleClass("hidden");
     });
     $(`#panel${panelId} .panel-header p`).html(localPanel.name);
-    if (localPanel.description) {
-        handleDescriptionTooltip(panelId,localPanel.description)
+    if (localPanel.description||localPanel.queryData.searchText) {
+        handleDescriptionTooltip(panelId,localPanel.description,localPanel.queryData.searchText)
     } else {
         $(`#panel${panelId} .panel-info-corner`).hide();
     }
-    
+
 
     let panelElement = document.getElementById(`panel${panelId}`);
     panelElement.style.position = "absolute";
@@ -747,13 +798,13 @@ function displayPanelsWithoutRefreshing() {
 
 function showToast(msg) {
     let toast =
-        `<div class="div-toast" id="save-db-modal"> 
+        `<div class="div-toast" id="save-db-modal">
         ${msg}
         <button type="button" aria-label="Close" class="toast-close">✖</button>
     <div>`
     $('body').prepend(toast);
     $('.toast-close').on('click', removeToast)
-    setTimeout(removeToast, 10000);
+    setTimeout(removeToast, 1000);
 }
 
 function removeToast() {
@@ -761,7 +812,7 @@ function removeToast() {
 }
 
 function getDashboardId() {
-    let queryString = decodeURIComponent(window.location.search); //parsing 
+    let queryString = decodeURIComponent(window.location.search); //parsing
     queryString = queryString.substring(1).split("=");
     let uniq = queryString[1];
     return uniq;
@@ -892,7 +943,7 @@ var panelLayout =
 `;
 
 function checkForAddigInTopRow() {
-    let temp = [];  
+    let temp = [];
 
     for (let i = 0; i < localPanels.length; i++) {
         let y = localPanels[i].gridpos.y;
@@ -978,7 +1029,7 @@ function addPanel(panelToDuplicate) {
         panelToDuplicate.gridpos.w = panelWidth;
         if (panelToDuplicate.description){
             handleDescriptionTooltip(panelToDuplicate.panelId,panelToDuplicate.description)
-        }    
+        }
     }
 
     panelToDuplicate
@@ -1082,6 +1133,8 @@ function handleDbSettings() {
         crossDomain: true,
     }).then(function (res) {
         console.log(JSON.stringify(res))
+        $(".dbSet-dbName").val(res.name);
+        $(".dbSet-dbDescr").val(res.description);
         $('.dbSet-jsonModelData').val(JSON.stringify(JSON.unflatten(res), null, 2))
     })
 
@@ -1111,13 +1164,34 @@ function addDbSettingsEventListeners() {
 }
 
 function saveDbSetting() {
-    $('.dbSet-dbName').val("");
-    $('.dbSet-dbDescr').val("");
-    $('.dbSet-jsonModelData').val("");
-    updateDashboard();
-    $('#app-container').show();
-    $('.dbSet-container').hide();
+    let trimmedDbName = $('.dbSet-dbName').val().trim();
+    let trimmedDbDescription = $(".dbSet-dbDescr").val().trim();
+    if (!trimmedDbName) {
+        // Show error message using error-tip and popupOverlay
+        $('.error-tip').addClass('active');
+        $('.popupOverlay, .popupContent').addClass('active');
+        $('#error-message').text('Dashboard name cannot be empty.');
+        return;
+    }
+
+
+    dbName = trimmedDbName;
+    dbDescr = trimmedDbDescription;
+
+
+    updateDashboard()
+    .then(updateSuccessful => {
+        if (updateSuccessful) {
+            $('#app-container').show();
+            $('.dbSet-container').hide();
+        }
+    })
 }
+
+$('#error-ok-btn').click(function () {
+    $('.popupOverlay, .popupContent').removeClass('active');
+    $('.error-tip').removeClass('active');
+});
 
 function discardDbSetting() {
     if(editPanelFlag){
@@ -1171,7 +1245,7 @@ function startRefreshInterval(refreshInterval) {
             intervalId = setInterval(function () {
                 refreshDashboardHandler();
             }, parsedRefreshInterval);
-        
+
     }else{
         pauseRefreshInterval();
     }
@@ -1197,9 +1271,9 @@ function parseInterval(interval) {
         case 'm':
             return value * 60 * 1000;
         case 'h':
-            return value * 60 * 60 * 1000; 
+            return value * 60 * 60 * 1000;
         case 'd':
-            return value * 24 * 60 * 60 * 1000; 
+            return value * 24 * 60 * 60 * 1000;
         default:
             throw new Error("Invalid interval unit");
     }

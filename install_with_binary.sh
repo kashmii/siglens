@@ -87,10 +87,11 @@ https://api.segment.io/v1/track \
 }'
 
 tar -xvf "siglens-$latest_version-$os-$arch.tar.gz"
-PORT=80 
+cd  "siglens-$latest_version-$os-$arch"
+PORT=5122
 display_step 5 "Running the Server on http://localhost:$PORT"
-if [ $PORT == 80 ]; then 
-   echo "If you are not able to access localhost:80, try running '"export PORT=8090"' and rerunning this script"
+if [ $PORT == 5122 ]; then 
+   echo "If you are not able to access localhost:5122, try running '"export PORT=8090"' and rerunning this script"
 fi
 
-PORT=$PORT "siglens-$latest_version-$os-$arch/siglens" --config "siglens-$latest_version-$os-$arch/server.yaml"
+PORT=$PORT "./siglens" --config "server.yaml"

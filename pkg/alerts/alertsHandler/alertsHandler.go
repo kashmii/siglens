@@ -24,6 +24,7 @@ import (
 
 	"github.com/google/uuid"
 	alertsqlite "github.com/siglens/siglens/pkg/alerts/alertsqlite"
+	"github.com/siglens/siglens/pkg/config"
 
 	"github.com/siglens/siglens/pkg/alerts/alertutils"
 	"github.com/siglens/siglens/pkg/utils"
@@ -39,12 +40,15 @@ type database interface {
 	SetDB(db *sql.DB)
 	CreateAlert(alertInfo *alertutils.AlertDetails) (alertutils.AlertDetails, error)
 	GetAlert(alert_id string) (*alertutils.AlertDetails, error)
+	CreateAlertHistory(alertHistoryDetails *alertutils.AlertHistoryDetails) (*alertutils.AlertHistoryDetails, error)
+	GetAlertHistory(alertId string) ([]*alertutils.AlertHistoryDetails, error)
 	GetAllAlerts() ([]alertutils.AlertInfo, error)
 	CreateMinionSearch(alertInfo *alertutils.MinionSearch) (alertutils.MinionSearch, error)
 	GetMinionSearch(alert_id string) (*alertutils.MinionSearch, error)
 	GetAllMinionSearches() ([]alertutils.MinionSearch, error)
 	UpdateMinionSearchStateByAlertID(alertId string, alertState alertutils.AlertState) error
 	UpdateAlert(*alertutils.AlertDetails) error
+	UpdateSilenceMinutes(*alertutils.AlertDetails) error
 	DeleteAlert(alert_id string) error
 	CreateContact(*alertutils.Contact) error
 	CreateNotificationDetails(newNotif *alertutils.Notification) error
@@ -84,6 +88,13 @@ func Disconnect() {
 		return
 	}
 	databaseObj.CloseDb()
+}
+
+func ProcessVersionInfo(ctx *fasthttp.RequestCtx) {
+	responseBody := make(map[string]interface{})
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	responseBody["version"] = config.SigLensVersion
+	utils.WriteJsonResponse(ctx, responseBody)
 }
 
 func ProcessCreateAlertRequest(ctx *fasthttp.RequestCtx) {
@@ -134,6 +145,64 @@ func ProcessCreateAlertRequest(ctx *fasthttp.RequestCtx) {
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
 	responseBody["message"] = "Successfully created an alert"
+	utils.WriteJsonResponse(ctx, responseBody)
+}
+func ProcessSilenceAlertRequest(ctx *fasthttp.RequestCtx) {
+	responseBody := make(map[string]interface{})
+
+	// Check if databaseObj is nil
+	if databaseObj == nil {
+		log.Error("ProcessSilenceAlertRequest: databaseObj is nil")
+		ctx.SetStatusCode(fasthttp.StatusInternalServerError)
+		responseBody["error"] = "Internal server error"
+		utils.WriteJsonResponse(ctx, responseBody)
+		return
+	}
+
+	// Check if request body is empty
+	if string(ctx.PostBody()) == "" {
+		log.Error("ProcessSilenceAlertRequest: request body is empty")
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		responseBody["error"] = "Request body is empty"
+		utils.WriteJsonResponse(ctx, responseBody)
+		return
+	}
+
+	// Parse request
+	var silenceRequest struct {
+		AlertID        string `json:"alert_id"`
+		SilenceMinutes uint64 `json:"silence_minutes"`
+	}
+	if err := json.Unmarshal(ctx.PostBody(), &silenceRequest); err != nil {
+		log.Errorf("ProcessSilenceAlertRequest: could not parse request body, err=%+v", err)
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		responseBody["error"] = err.Error()
+		utils.WriteJsonResponse(ctx, responseBody)
+		return
+	}
+
+	// Find alert and update SilenceMinutes
+	alertDataObj, err := databaseObj.GetAlert(silenceRequest.AlertID)
+	if err != nil {
+		log.Errorf("ProcessSilenceAlertRequest: could not find alert, err=%+v", err)
+		ctx.SetStatusCode(fasthttp.StatusNotFound)
+		responseBody["error"] = err.Error()
+		utils.WriteJsonResponse(ctx, responseBody)
+		return
+	}
+
+	alertDataObj.AlertInfo.SilenceMinutes = silenceRequest.SilenceMinutes
+	// Update the SilenceMinutes
+	err = databaseObj.UpdateSilenceMinutes(alertDataObj)
+	if err != nil {
+		log.Errorf("ProcessUpdateSilenceRequestRequest: could not update alert=%+v, err=%+v", alertDataObj.AlertInfo.AlertName, err)
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		responseBody["error"] = err.Error()
+		utils.WriteJsonResponse(ctx, responseBody)
+		return
+	}
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	responseBody["message"] = "Successfully updated silence period"
 	utils.WriteJsonResponse(ctx, responseBody)
 }
 
@@ -251,6 +320,18 @@ func ProcessUpdateAlertRequest(ctx *fasthttp.RequestCtx) {
 		return
 	}
 
+	// TODO: Update Username with specific user who changed the config. Username can be fetched from "ctx" when the authentication is implemented.
+	alertEvent := alertutils.AlertHistoryDetails{
+		AlertId:          alertToBeUpdated.AlertInfo.AlertId,
+		EventDescription: alertutils.ConfigChange,
+		UserName:         alertutils.UserModified,
+		EventTriggeredAt: time.Now().UTC(),
+	}
+	_, err = databaseObj.CreateAlertHistory(&alertEvent)
+	if err != nil {
+		log.Errorf("ProcessUpdateAlertRequest: could not create alert event in alert history. found error = %v", err)
+	}
+
 	err = RemoveCronJob(alertToBeUpdated.AlertInfo.AlertId)
 	if err != nil {
 		log.Errorf("ProcessUpdateAlertRequest: could not remove old cron job corresponding to alert=%+v, err=%+v", alertToBeUpdated.AlertInfo.AlertName, err)
@@ -271,6 +352,32 @@ func ProcessUpdateAlertRequest(ctx *fasthttp.RequestCtx) {
 	responseBody["message"] = "Alert updated successfully"
 	utils.WriteJsonResponse(ctx, responseBody)
 	ctx.SetStatusCode(fasthttp.StatusOK)
+}
+
+func ProcessAlertHistoryRequest(ctx *fasthttp.RequestCtx) {
+	if databaseObj == nil {
+		responseBody := make(map[string]interface{})
+		log.Errorf("ProcessAlertHistoryRequest: failed to get alert history, err = %+v", invalidDatabaseProvider)
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		responseBody["error"] = invalidDatabaseProvider
+		utils.WriteJsonResponse(ctx, responseBody)
+		return
+	}
+
+	responseBody := make(map[string]interface{})
+	alertId := utils.ExtractParamAsString(ctx.UserValue("alertID"))
+	alertHistory, err := databaseObj.GetAlertHistory(alertId)
+	if err != nil {
+		log.Errorf("ProcessAlertHistoryRequest: failed to get alert history with alertId = %+v, err = %+v", alertId, err.Error())
+		ctx.SetStatusCode(fasthttp.StatusBadRequest)
+		responseBody["error"] = err.Error()
+		utils.WriteJsonResponse(ctx, responseBody)
+		return
+	}
+
+	responseBody["alertHistory"] = alertHistory
+	ctx.SetStatusCode(fasthttp.StatusOK)
+	utils.WriteJsonResponse(ctx, responseBody)
 }
 
 // request body should contain alert_id only
@@ -633,7 +740,7 @@ func convertToSiglensAlert(lmDetails alertutils.LogLinesFile) []*alertutils.Mini
 			CreateTimestamp: time.Now(),
 		}
 		minionSearchDetails := alertutils.MinionSearchDetails{
-			Respository: entry.Respository,
+			Repository:  entry.Repository,
 			Filename:    entry.Filename,
 			LineNumber:  entry.LineNumber,
 			LogText:     entry.LogText,

@@ -48,6 +48,7 @@ type TimeBucket struct {
 	StartTime      uint64 // start time of histogram
 	EndTime        uint64 // end time of histogram
 	AggName        string // name of aggregation
+	Timechart      *TimechartExpr
 }
 
 type RangeBucket struct {
@@ -94,6 +95,7 @@ const (
 	OutputTransformType PipeCommandType = iota + 1
 	MeasureAggsType
 	GroupByType
+	TransactionType
 )
 
 type QueryType uint8
@@ -111,18 +113,40 @@ type SortRequest struct {
 	Ascending bool   // if true, result is in ascending order. Else, result is in descending order
 }
 
+type FilterStringExpr struct {
+	StringValue  string
+	EvalBoolExpr *BoolExpr
+	SearchNode   interface{} // type: *ast.Node while parsing, later evaluated to ASTNode
+}
+
+type TransactionArguments struct {
+	Fields     []string
+	StartsWith *FilterStringExpr
+	EndsWith   *FilterStringExpr
+}
+
+type TransactionGroupState struct {
+	Key       string
+	Open      bool
+	RecInden  string
+	Timestamp uint64
+}
+
 type QueryAggregators struct {
-	PipeCommandType   PipeCommandType
-	OutputTransforms  *OutputTransforms
-	MeasureOperations []*MeasureAggregator
-	TimeHistogram     *TimeBucket     // Request for time histograms
-	GroupByRequest    *GroupByRequest // groupby aggregation request
-	Sort              *SortRequest    // how to sort resulting data
-	EarlyExit         bool            // should query early exit
-	BucketLimit       int
-	ShowRequest       *ShowRequest
-	TableName         string
-	Next              *QueryAggregators
+	PipeCommandType      PipeCommandType
+	OutputTransforms     *OutputTransforms
+	MeasureOperations    []*MeasureAggregator
+	MathOperations       []*MathEvaluator
+	TimeHistogram        *TimeBucket     // Request for time histograms
+	GroupByRequest       *GroupByRequest // groupby aggregation request
+	Sort                 *SortRequest    // how to sort resulting data
+	EarlyExit            bool            // should query early exit
+	BucketLimit          int
+	ShowRequest          *ShowRequest
+	TableName            string
+	TransactionArguments *TransactionArguments
+	Next                 *QueryAggregators
+	Limit                int
 }
 
 type ShowRequest struct {
@@ -157,9 +181,17 @@ type GroupByRequest struct {
 }
 
 type MeasureAggregator struct {
-	MeasureCol  string                   `json:"measureCol,omitempty"`
-	MeasureFunc utils.AggregateFunctions `json:"measureFunc,omitempty"`
-	StrEnc      string                   `json:"strEnc,omitempty"`
+	MeasureCol      string                   `json:"measureCol,omitempty"`
+	MeasureFunc     utils.AggregateFunctions `json:"measureFunc,omitempty"`
+	StrEnc          string                   `json:"strEnc,omitempty"`
+	ValueColRequest *ValueExpr               `json:"valueColRequest,omitempty"`
+}
+
+type MathEvaluator struct {
+	MathCol         string              `json:"mathCol,omitempty"`
+	MathFunc        utils.MathFunctions `json:"mathFunc,omitempty"`
+	StrEnc          string              `json:"strEnc,omitempty"`
+	ValueColRequest *ValueExpr          `json:"valueCol,omitempty"`
 }
 
 type ColumnsRequest struct {
@@ -185,6 +217,7 @@ type LetColumnsRequest struct {
 	RexColRequest       *RexExpr
 	StatisticColRequest *StatisticExpr
 	RenameColRequest    *RenameExpr
+	DedupColRequest     *DedupExpr
 	NewColName          string
 }
 
@@ -246,6 +279,7 @@ type SegStats struct {
 	Hll         *hyperloglog.Sketch
 	NumStats    *NumericStats
 	StringStats *StringStats
+	Records     []*utils.CValueEnclosure
 }
 
 type NumericStats struct {
@@ -269,6 +303,16 @@ type SegStatsJSON struct {
 
 type AllSegStatsJSON struct {
 	AllSegStats map[string]*SegStatsJSON
+}
+
+type RangeStat struct {
+	Min float64
+	Max float64
+}
+
+type AvgStat struct {
+	Count int64
+	Sum   float64
 }
 
 // init SegStats from raw bytes of SegStatsJSON
@@ -330,6 +374,7 @@ func (ma *MeasureAggregator) String() string {
 
 func (ss *SegStats) Merge(other *SegStats) {
 	ss.Count += other.Count
+	ss.Records = append(ss.Records, other.Records...)
 	err := ss.Hll.Merge(other.Hll)
 	if err != nil {
 		log.Errorf("Failed to merge hyperloglog stats: %v", err)
@@ -425,7 +470,7 @@ func (qa *QueryAggregators) IsStatisticBlockEmpty() bool {
 // To determine whether it contains certain specific AggregatorBlocks, such as: Rename Block, Rex Block...
 func (qa *QueryAggregators) HasQueryAggergatorBlock() bool {
 	return qa != nil && qa.OutputTransforms != nil && qa.OutputTransforms.LetColumns != nil &&
-		(qa.OutputTransforms.LetColumns.RexColRequest != nil || qa.OutputTransforms.LetColumns.RenameColRequest != nil)
+		(qa.OutputTransforms.LetColumns.RexColRequest != nil || qa.OutputTransforms.LetColumns.RenameColRequest != nil || qa.OutputTransforms.LetColumns.DedupColRequest != nil)
 }
 
 func (qa *QueryAggregators) HasQueryAggergatorBlockInChain() bool {
@@ -436,6 +481,72 @@ func (qa *QueryAggregators) HasQueryAggergatorBlockInChain() bool {
 		return qa.Next.HasQueryAggergatorBlockInChain()
 	}
 	return false
+}
+
+func (qa *QueryAggregators) HasDedupBlock() bool {
+	if qa != nil && qa.OutputTransforms != nil && qa.OutputTransforms.LetColumns != nil {
+		letColumns := qa.OutputTransforms.LetColumns
+
+		if letColumns.DedupColRequest != nil {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (qa *QueryAggregators) HasDedupBlockInChain() bool {
+	if qa.HasDedupBlock() {
+		return true
+	}
+	if qa.Next != nil {
+		return qa.Next.HasDedupBlock()
+	}
+	return false
+}
+
+func (qa *QueryAggregators) HasTransactionArguments() bool {
+	return qa != nil && qa.TransactionArguments != nil
+}
+
+func (qa *QueryAggregators) HasTransactionArgumentsInChain() bool {
+	if qa.HasTransactionArguments() {
+		return true
+	}
+	if qa.Next != nil {
+		return qa.Next.HasTransactionArgumentsInChain()
+	}
+	return false
+}
+
+// To determine whether it contains ValueColRequest
+func (qa *QueryAggregators) HasValueColRequest() bool {
+	for _, agg := range qa.MeasureOperations {
+		if agg.ValueColRequest != nil {
+			return true
+		}
+	}
+	return false
+}
+
+// To determine whether it contains Aggregate Func: Values()
+func (qa *QueryAggregators) HasValuesFunc() bool {
+	for _, agg := range qa.MeasureOperations {
+		if agg.MeasureFunc == utils.Values {
+			return true
+		}
+	}
+	return false
+}
+
+func (qa *QueryAggregators) UsedByTimechart() bool {
+	return qa != nil && qa.TimeHistogram != nil && qa.TimeHistogram.Timechart != nil
+}
+
+func (qa *QueryAggregators) CanLimitBuckets() bool {
+	// We shouldn't limit the buckets if there's other things to do after the
+	// aggregation, like sorting, filtering, making new columns, etc.
+	return qa.Sort == nil && qa.Next == nil
 }
 
 // Init default query aggregators.

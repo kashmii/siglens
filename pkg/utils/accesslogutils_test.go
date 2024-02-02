@@ -2,7 +2,6 @@ package utils
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"strings"
 	"testing"
@@ -13,7 +12,7 @@ import (
 
 func TestAddAccessLogEntry(t *testing.T) {
 	// Create a temporary test access.log file
-	tempLogFile, err := ioutil.TempFile("", "test_access.log")
+	tempLogFile, err := os.CreateTemp("", "test_access.log")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -30,11 +29,12 @@ func TestAddAccessLogEntry(t *testing.T) {
 	}
 
 	// Call the function with the temporary logFile
+	allowWebsocket := false
 	fileName := tempLogFile.Name()
-	AddAccessLogEntry(data, fileName)
+	AddAccessLogEntry(data, allowWebsocket, fileName)
 
 	// Read the content of the temporary file
-	content, err := ioutil.ReadFile(fileName)
+	content, err := os.ReadFile(fileName)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -76,18 +76,19 @@ func Test_AddLogEntryValidations(t *testing.T) {
 
 	for _, test := range cases {
 		// Create a temporary test access.log file
-		tempLogFile, err := ioutil.TempFile("", "test_access.log")
+		tempLogFile, err := os.CreateTemp("", "test_access.log")
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer os.Remove(tempLogFile.Name())
 
 		// Call the function with the temporary logFile
+		allowWebsocket := false
 		fileName := tempLogFile.Name()
-		AddAccessLogEntry(test.input, fileName)
+		AddAccessLogEntry(test.input, allowWebsocket, fileName)
 
 		// Read the content of the temporary file
-		content, err := ioutil.ReadFile(fileName)
+		content, err := os.ReadFile(fileName)
 		if err != nil {
 			t.Fatal(err)
 		}

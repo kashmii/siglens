@@ -47,6 +47,14 @@ type AlertInfo struct {
 	ContactId       string       `json:"contact_id"`
 	ContactName     string       `json:"contact_name"`
 	Labels          []AlertLabel `json:"labels"`
+	SilenceMinutes  uint64       `json:"silence_minutes"`
+}
+
+type AlertHistoryDetails struct {
+	AlertId          string    `json:"alert_id"`
+	EventDescription string    `json:"event_description"`
+	UserName         string    `json:"user_name"`
+	EventTriggeredAt time.Time `json:"event_triggered_at"`
 }
 
 type QueryParams struct {
@@ -102,6 +110,11 @@ const (
 	Inactive AlertState = iota
 	Pending
 	Firing
+	SystemGeneratedAlert = "System Generated"
+	UserModified         = "User Modified"
+	AlertFiring          = "Alert Firing"
+	AlertNormal          = "Alert Normal"
+	ConfigChange         = "Config Modified"
 )
 
 // This MUST be synced with how https://github.com/siglens/logminion structures
@@ -114,7 +127,7 @@ type LogLinesFile struct {
 // This MUST be synced with how https://github.com/siglens/logminion structures
 // its output JSON.
 type LogLinesEntry struct {
-	Respository string             `json:"repository,omitempty"`
+	Repository  string             `json:"repository,omitempty"`
 	Filename    string             `json:"filename,omitempty"`
 	LineNumber  int                `json:"line_number,omitempty"`
 	LogText     string             `json:"log_text,omitempty"`
@@ -133,7 +146,7 @@ type LogLinesEntryAlert struct {
 }
 
 type MinionSearchDetails struct {
-	Respository string `json:"repository,omitempty"`
+	Repository  string `json:"repository,omitempty"`
 	Filename    string `json:"filename,omitempty"`
 	LineNumber  int    `json:"line_number,omitempty"`
 	LogText     string `json:"log_text,omitempty"`

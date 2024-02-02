@@ -215,6 +215,21 @@ func createUniqId(dname string) string {
 	return newId
 }
 
+// method to check if the dashboard name already exists
+func dashboardNameExists(dname string, orgid uint64) bool {
+	allDashboardIds, err := getAllDashboardIds(orgid)
+	if err != nil {
+		log.Errorf("Error getting all dashboard IDs: %v", err)
+		return false
+	}
+	for _, name := range allDashboardIds {
+		if name == dname {
+			return true
+		}
+	}
+	return false
+}
+
 func createDashboard(dname string, orgid uint64) (map[string]string, error) {
 	if dname == "" {
 		log.Errorf("createDashboard: failed to create Dashboard, with empty dashboard name")
@@ -222,6 +237,11 @@ func createDashboard(dname string, orgid uint64) (map[string]string, error) {
 	}
 
 	newId := createUniqId(dname)
+
+	if dashboardNameExists(dname, orgid) {
+		log.Errorf("Dashboard with name %s already exists", dname)
+		return nil, errors.New("dashboard name already exists")
+	}
 
 	dashBoardIds, err := getAllDashboardIds(orgid)
 	if err != nil {
@@ -284,9 +304,72 @@ func createDashboard(dname string, orgid uint64) (map[string]string, error) {
 	return retval, nil
 }
 
+func dashboardIsDefault(id string) bool {
+	defaultIds := []string{
+		"10329b95-47a8-48df-8b1d-0a0a01ec6c42",
+		"a28f485c-4747-4024-bb6b-d230f101f852",
+		"bd74f11e-26c8-4827-bf65-c0b464e1f2a4",
+		"53cb3dde-fd78-4253-808c-18e4077ef0f1",
+	}
+
+	for _, defaultId := range defaultIds {
+		if id == defaultId {
+			return true
+		}
+	}
+
+	return false
+}
+
+func toggleFavorite(id string) (bool, error) {
+	// Load the dashboard JSON file
+	var dashboardDetailsFname string
+	if dashboardIsDefault(id) {
+		dashboardDetailsFname = "defaultDBs/details/" + id + ".json"
+	} else {
+		dashboardDetailsFname = config.GetDataPath() + "querynodes/" + config.GetHostID() + "/dashboards/details/" + id + ".json"
+	}
+	dashboardJson, err := os.ReadFile(dashboardDetailsFname)
+	if err != nil {
+		log.Errorf("toggleFavorite: Failed to read file=%v, err=%v", dashboardDetailsFname, err)
+		return false, err
+	}
+
+	// Unmarshal JSON file into a map
+	var dashboard map[string]interface{}
+	err = json.Unmarshal(dashboardJson, &dashboard)
+	if err != nil {
+		log.Errorf("toggleFavorite: Failed to unmarshal json, err=%v", err)
+		return false, err
+	}
+
+	// Toggle the "isFavorite" field
+	isFavorite, ok := dashboard["isFavorite"].(bool)
+	if !ok {
+		// If the "isFavorite" field does not exist or is not a bool, treat the dashboard as not favorited
+		isFavorite = false
+	}
+	dashboard["isFavorite"] = !isFavorite
+
+	// Marshal the updated dashboard back into JSON
+	updatedDashboardJson, err := json.Marshal(dashboard)
+	if err != nil {
+		log.Errorf("toggleFavorite: Failed to marshal json, err=%v", err)
+		return false, err
+	}
+
+	// Save the updated dashboard back to the JSON file
+	err = os.WriteFile(dashboardDetailsFname, updatedDashboardJson, 0644)
+	if err != nil {
+		log.Errorf("toggleFavorite: Failed to write file=%v, err=%v", dashboardDetailsFname, err)
+		return false, err
+	}
+
+	return !isFavorite, nil
+}
 func getDashboard(id string) (map[string]interface{}, error) {
 	var dashboardDetailsFname string
-	if id == "10329b95-47a8-48df-8b1d-0a0a01ec6c42" || id == "a28f485c-4747-4024-bb6b-d230f101f852" || id == "bd74f11e-26c8-4827-bf65-c0b464e1f2a4" {
+	if dashboardIsDefault(id) {
 		dashboardDetailsFname = "defaultDBs/details/" + id + ".json"
 	} else {
 		dashboardDetailsFname = config.GetDataPath() + "querynodes/" + config.GetHostID() + "/dashboards/details/" + id + ".json"
@@ -326,9 +409,29 @@ func updateDashboard(id string, dName string, dashboardDetails map[string]interf
 		return errors.New("updateDashboard: Dashboard id does not exist")
 	}
 
+	currentDashboardDetails, err := getDashboard(id)
+	if err != nil {
+		log.Errorf("ProcessGetDashboardRequest: could not get Dashboard=%v, err=%v", id, err)
+		return errors.New("updateDashboard: Error fetching dashboard details")
+	}
+
+	// Check if isFavorite is provided in the update
+	if _, exists := currentDashboardDetails["isFavorite"]; !exists {
+		// If isFavorite does not exist in currentDashboardDetails, set it to false
+		dashboardDetails["isFavorite"] = false
+		currentDashboardDetails["isFavorite"] = false
+	} else if _, ok := dashboardDetails["isFavorite"].(bool); !ok {
+		// If isFavorite is not provided in the update, keep the current value
+		dashboardDetails["isFavorite"] = currentDashboardDetails["isFavorite"]
+	}
 	// Update the dashboard name if it is different
 	if allDashboards[id] != dName {
-		allDashboards[id] = dName
+		if dashboardNameExists(dName, orgid) {
+			log.Errorf("Dashboard with name %s already exists", dName)
+			return errors.New("dashboard name already exists")
+		} else {
+			allDashboardsIds[orgid][id] = dName
+		}
 	}
 	allDashboardsIdsLock.RLock()
 	orgDashboards := allDashboardsIds[orgid]
@@ -437,6 +540,15 @@ func setBadMsg(ctx *fasthttp.RequestCtx) {
 	utils.WriteResponse(ctx, httpResp)
 }
 
+// method to set conflict message and 409 status code
+func setConflictMsg(ctx *fasthttp.RequestCtx) {
+	var httpResp utils.HttpServerResponse
+	ctx.SetStatusCode(fasthttp.StatusConflict)
+	httpResp.Message = "Conflict: Dashboard name already exists"
+	httpResp.StatusCode = fasthttp.StatusConflict
+	utils.WriteResponse(ctx, httpResp)
+}
+
 func ProcessCreateDashboardRequest(ctx *fasthttp.RequestCtx, myid uint64) {
 	rawJSON := ctx.PostBody()
 	if rawJSON == nil {
@@ -456,13 +568,100 @@ func ProcessCreateDashboardRequest(ctx *fasthttp.RequestCtx, myid uint64) {
 	dashboardInfo, err := createDashboard(dname, myid)
 
 	if err != nil {
-		log.Errorf("ProcessCreateDashboardRequest: could not create Dashboard=%v, err=%v", dname, err)
-		setBadMsg(ctx)
-		return
+		if err.Error() == "dashboard name already exists" {
+			setConflictMsg(ctx)
+			return
+		} else {
+			log.Errorf("ProcessCreateDashboardRequest: could not create Dashboard=%v, err=%v", dname, err)
+			setBadMsg(ctx)
+			return
+		}
 	}
 
 	utils.WriteJsonResponse(ctx, dashboardInfo)
 	ctx.SetStatusCode(fasthttp.StatusOK)
+}
+
+func ProcessFavoriteRequest(ctx *fasthttp.RequestCtx) {
+	dId := utils.ExtractParamAsString(ctx.UserValue("dashboard-id"))
+	if dId == "" {
+		log.Errorf("ProcessFavoriteRequest: received empty dashboard id")
+		setBadMsg(ctx)
+		return
+	}
+
+	isFavorite, err := toggleFavorite(dId)
+	if err != nil {
+		log.Errorf("ProcessFavoriteRequest: could not toggle favorite status for Dashboard=%v, err=%v", dId, err)
+		setBadMsg(ctx)
+		return
+	}
+
+	response := map[string]bool{"isFavorite": isFavorite}
+	utils.WriteJsonResponse(ctx, response)
+	ctx.SetStatusCode(fasthttp.StatusOK)
+}
+
+func ProcessListFavoritesRequest(ctx *fasthttp.RequestCtx, myid uint64) {
+	dIds, err := getAllFavoriteDashboardIds(myid)
+
+	if err != nil {
+		log.Errorf("ProcessListFavoritesRequest: could not get favorite dashboard ids, err=%v", err)
+		setBadMsg(ctx)
+		return
+	}
+	utils.WriteJsonResponse(ctx, dIds)
+	ctx.SetStatusCode(fasthttp.StatusOK)
+}
+
+func getAllFavoriteDashboardIds(orgId uint64) (map[string]string, error) {
+	allDashboards, err := getAllDashboardIds(orgId)
+	if err != nil {
+		return nil, err
+	}
+
+	favoriteDashboards := make(map[string]string)
+	for id, name := range allDashboards {
+		isFavorite, err := isDashboardFavorite(id)
+		if err != nil {
+			return nil, err
+		}
+
+		if isFavorite {
+			favoriteDashboards[id] = name
+		}
+	}
+
+	return favoriteDashboards, nil
+}
+
+func isDashboardFavorite(id string) (bool, error) {
+	var dashboardDetailsFname string
+
+	if dashboardIsDefault(id) {
+		dashboardDetailsFname = "defaultDBs/details/" + id + ".json"
+	} else {
+		dashboardDetailsFname = config.GetDataPath() + "querynodes/" + config.GetHostID() + "/dashboards/details/" + id + ".json"
+	}
+
+	dashboardJson, err := os.ReadFile(dashboardDetailsFname)
+	if err != nil {
+		return false, err
+	}
+
+	var dashboard map[string]interface{}
+	err = json.Unmarshal(dashboardJson, &dashboard)
+	if err != nil {
+		log.Errorf("isDashboardFavorite: Failed to unmarshal json, err=%v", err)
+		return false, err
+	}
+
+	isFav, ok := dashboard["isFavorite"].(bool)
+	if !ok {
+		isFav = false
+	}
+
+	return isFav, nil
 }
 
 func ProcessListAllRequest(ctx *fasthttp.RequestCtx, myid uint64) {
@@ -511,9 +710,14 @@ func ProcessUpdateDashboardRequest(ctx *fasthttp.RequestCtx, myid uint64) {
 	dashboardDetails := readJSON["details"].(map[string]interface{})
 	err = updateDashboard(dId, dName, dashboardDetails, myid)
 	if err != nil {
-		log.Errorf("ProcessCreateDashboardRequest: could not create Dashboard=%v, err=%v", dId, err)
-		setBadMsg(ctx)
-		return
+		if err.Error() == "dashboard name already exists" {
+			setConflictMsg(ctx)
+			return
+		} else {
+			log.Errorf("ProcessCreateDashboardRequest: could not create Dashboard=%v, err=%v", dId, err)
+			setBadMsg(ctx)
+			return
+		}
 	}
 	response := "Dashboard updated successfully"
 	utils.WriteJsonResponse(ctx, response)

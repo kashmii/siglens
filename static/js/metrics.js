@@ -19,7 +19,6 @@ limitations under the License.
 var lineChart;
 
 $(document).ready(() => {
-    displayNavbar();
 
     let stDate = "now-1h";
     let endDate = "now";
@@ -71,6 +70,12 @@ function setupMetricsEventHandlers() {
         hideError();
         $("#metrics-input").val('');
         $("#metrics-graph-container").show();
+        if (lineChart !== undefined) {
+            lineChart.destroy();
+            $('#metrics-legends').empty();
+        }
+        $('#metrics-legends').empty();
+        $('.metrics-response').hide();
         lineChart.destroy();
         $('#metrics-legends').empty();
         $('.metrics-response').hide();

@@ -54,8 +54,8 @@ const allAlertsTableQuery = `CREATE TABLE IF NOT EXISTS siglens.all_alerts (
 	contact_name TEXT NOT NULL,
 	cron_job JSONB,
 	labels JSONB,
-	node_id INT
-
+	node_id INT,
+	silence_minutes INT DEFAULT 0
   );`
 
 const minionSearchesTableQuery = `CREATE TABLE IF NOT EXISTS siglens.minion_searches (
@@ -90,6 +90,15 @@ const allNotifsTableQuery = `CREATE TABLE IF NOT EXISTS siglens.notification_det
 	alert_id TEXT NOT NULL PRIMARY KEY,
 	cooldown_period INT NOT NULL,
 	last_sent_time TIMESTAMP,
+	FOREIGN KEY (alert_id) REFERENCES all_alerts(alert_id) ON DELETE CASCADE
+  );`
+
+const alertsHistoryTableQuery = `CREATE TABLE IF NOT EXISTS siglens.alerts_history (
+    id TEXT NOT NULL PRIMARY KEY,
+	alert_id TEXT NOT NULL,
+	event_description TEXT,
+	username TEXT,
+	event_triggered_at TIMESTAMP,
 	FOREIGN KEY (alert_id) REFERENCES all_alerts(alert_id) ON DELETE CASCADE
   );`
 
@@ -148,6 +157,12 @@ func (p *Sqlite) InitializeDB() error {
 	_, err = tx.ExecContext(p.ctx, minionSearchesTableQuery)
 	if err != nil {
 		log.Errorf("initializeDB: unable to execute query: %v, err: %+v", minionSearchesTableQuery, err)
+		_ = tx.Rollback()
+		return err
+	}
+	_, err = tx.ExecContext(p.ctx, alertsHistoryTableQuery)
+	if err != nil {
+		log.Errorf("initializeDB: unable to execute query: %v, err: %+v", alertsHistoryTableQuery, err)
 		_ = tx.Rollback()
 		return err
 	}
@@ -369,6 +384,94 @@ func (p Sqlite) GetAlert(alert_id string) (*alertutils.AlertDetails, error) {
 		EvalFor: eval_for, EvalInterval: eval_interval, Message: message}, nil
 }
 
+func (p Sqlite) CreateAlertHistory(alertHistoryDetails *alertutils.AlertHistoryDetails) (*alertutils.AlertHistoryDetails, error) {
+	if !isValid(alertHistoryDetails.AlertId) || !isValid(alertHistoryDetails.EventDescription) || !isValid(alertHistoryDetails.UserName) {
+		log.Errorf("CreateAlertHistory: data validation check failed")
+		return nil, errors.New("CreateAlertHistory: data validation check failed")
+	}
+
+	tx, err := p.db.BeginTx(p.ctx, nil)
+	if err != nil {
+		log.Errorf("CreateAlertHistory: unable to begin transaction, err: %+v", err)
+		return nil, err
+	}
+
+	id := CreateUniqId()
+
+	sqlStatement := "INSERT INTO alerts_history(id, alert_id, event_description, username, event_triggered_at) VALUES($1, $2, $3, $4, $5);"
+	_, err = tx.ExecContext(p.ctx, sqlStatement, id, alertHistoryDetails.AlertId, alertHistoryDetails.EventDescription, alertHistoryDetails.UserName, alertHistoryDetails.EventTriggeredAt)
+	if err != nil {
+		log.Errorf("CreateAlertHistory: unable to execute query: %v, with parameters: %v %+v %v %v %v, err: %v ", sqlStatement, id, alertHistoryDetails.AlertId, alertHistoryDetails.EventDescription, alertHistoryDetails.UserName, alertHistoryDetails.EventTriggeredAt, err)
+		_ = tx.Rollback()
+		return nil, err
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		log.Errorf("CreateAlertHistory: unable to execute transaction, err: %+v", err)
+		_ = tx.Rollback()
+		return nil, err
+	}
+
+	return alertHistoryDetails, nil
+}
+
+func (p Sqlite) GetAlertHistory(alertId string) ([]*alertutils.AlertHistoryDetails, error) {
+	if !isValid(alertId) {
+		log.Errorf("GetAlertHistory: data validation check failed")
+		return nil, errors.New("GetAlertHistory: data validation check failed")
+	}
+
+	alertExists, _, err := p.verifyAlertExists(alertId)
+	if err != nil {
+		log.Errorf("GetAlertHistory: unable to verify if alert exists, err: %+v", err)
+		return nil, err
+	}
+
+	if !alertExists {
+		log.Errorf("GetAlertHistory: alert does not exist")
+		return nil, errors.New("alert does not exist")
+	}
+
+	tx, err := p.db.BeginTx(p.ctx, nil)
+	if err != nil {
+		log.Errorf("GetAlertHistory: unable to begin transaction, err: %+v", err)
+		return nil, err
+	}
+
+	var alertHistory []*alertutils.AlertHistoryDetails
+	sqlStatement := "SELECT event_description, username, event_triggered_at FROM alerts_history WHERE alert_id=$1; ORDER BY event_triggered_at DESC;"
+	rows, err := tx.Query(sqlStatement, alertId)
+	if err != nil {
+		log.Errorf("GetAlertHistory: unable to execute query: %v, err: %+v", sqlStatement, err)
+		_ = tx.Rollback()
+		return nil, err
+	}
+
+	for rows.Next() {
+		var alertHistoryObj *alertutils.AlertHistoryDetails
+
+		alertHistoryObj.AlertId = alertId
+		err = rows.Scan(&alertHistoryObj.EventDescription, &alertHistoryObj.UserName, &alertHistoryObj.EventTriggeredAt)
+		if err != nil {
+			log.Errorf("GetAlertHistory: unable to execute query: %v, err: %+v", sqlStatement, err)
+			_ = tx.Rollback()
+			return nil, err
+		}
+
+		alertHistory = append(alertHistory, alertHistoryObj)
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		log.Errorf("GetAlertHistory: unable to execute transaction, err: %+v", err)
+		_ = tx.Rollback()
+		return nil, err
+	}
+
+	return alertHistory, nil
+}
+
 func (p Sqlite) GetAllAlerts() ([]alertutils.AlertInfo, error) {
 	var alerts []alertutils.AlertInfo
 	tx, err := p.db.BeginTx(p.ctx, nil)
@@ -376,7 +479,14 @@ func (p Sqlite) GetAllAlerts() ([]alertutils.AlertInfo, error) {
 		log.Errorf("getAllAlerts: unable to begin transaction, err: %+v", err)
 		return nil, err
 	}
-	sqlStatement := "SELECT alert_id, alert_name, state, create_timestamp, contact_id, labels FROM all_alerts;"
+	sqlSta := "ALTER TABLE all_alerts ADD COLUMN silence_minutes INTEGER DEFAULT 0;"
+	_, errorAlter := tx.Exec(sqlSta)
+	if err != nil {
+		log.Errorf("getAllAlerts: Error adding column: %v, err: %+v", sqlSta, errorAlter)
+		return nil, err
+	}
+
+	sqlStatement := "SELECT alert_id, alert_name, state, create_timestamp, contact_id, labels, silence_minutes FROM all_alerts;"
 	rows, err := tx.Query(sqlStatement)
 	if err != nil {
 		log.Errorf("getAllAlerts: unable to execute query: %v, err: %+v", sqlStatement, err)
@@ -392,8 +502,9 @@ func (p Sqlite) GetAllAlerts() ([]alertutils.AlertInfo, error) {
 			create_timestamp time.Time
 			contact_id       string
 			labels           []byte
+			silence_minutes  uint64
 		)
-		err := rows.Scan(&alert_id, &alert_name, &state, &create_timestamp, &contact_id, &labels)
+		err := rows.Scan(&alert_id, &alert_name, &state, &create_timestamp, &contact_id, &labels, &silence_minutes)
 		if err != nil {
 			log.Errorf("getAllAlerts: uanble to scan row: %+v", err)
 			_ = tx.Rollback()
@@ -406,8 +517,7 @@ func (p Sqlite) GetAllAlerts() ([]alertutils.AlertInfo, error) {
 			_ = tx.Rollback()
 			return nil, err
 		}
-
-		alerts = append(alerts, alertutils.AlertInfo{AlertId: alert_id, AlertName: alert_name, State: state, CreateTimestamp: create_timestamp, ContactId: contact_id, Labels: labels_array})
+		alerts = append(alerts, alertutils.AlertInfo{AlertId: alert_id, AlertName: alert_name, State: state, CreateTimestamp: create_timestamp, ContactId: contact_id, Labels: labels_array, SilenceMinutes: silence_minutes})
 	}
 	err = tx.Commit()
 	if err != nil {
@@ -415,6 +525,40 @@ func (p Sqlite) GetAllAlerts() ([]alertutils.AlertInfo, error) {
 		return nil, err
 	}
 	return alerts, nil
+}
+func (p Sqlite) UpdateSilenceMinutes(updatedSilenceMinutes *alertutils.AlertDetails) error {
+	if !isValid(updatedSilenceMinutes.AlertInfo.AlertName) || !isValid(updatedSilenceMinutes.AlertInfo.ContactName) || !isValid(updatedSilenceMinutes.QueryParams.QueryText) {
+		log.Errorf("updateSilenceMinutes: data validation check failed")
+		return errors.New("updateSilenceMinutesupdateSilenceMinutes: data validation check failed")
+	}
+	alertExists, _, err := p.verifyAlertExists(updatedSilenceMinutes.AlertInfo.AlertId)
+	if err != nil {
+		log.Errorf("updateSilenceMinutes: unable to verify if alert exists, err: %+v", err)
+		return err
+	}
+	if !alertExists {
+		log.Errorf("updateSilenceMinutes: alert does not exist")
+		return errors.New("alert does not exist")
+	}
+
+	tx, err := p.db.BeginTx(p.ctx, nil)
+	if err != nil {
+		log.Errorf("updateSilenceMinutes: unable to begin transaction, err: %+v", err)
+		return err
+	}
+	sqlStatement := "UPDATE all_alerts SET silence_minutes=$1 WHERE alert_id=$2;"
+	_, err = tx.ExecContext(p.ctx, sqlStatement, updatedSilenceMinutes.AlertInfo.SilenceMinutes, updatedSilenceMinutes.AlertInfo.AlertId)
+	if err != nil {
+		log.Errorf("updateSilenceMinutes: unable to execute query: %v, with alert name: %v, err: %+v", sqlStatement, updatedSilenceMinutes.AlertInfo.AlertName, err)
+		_ = tx.Rollback()
+		return err
+	}
+	err = tx.Commit()
+	if err != nil {
+		log.Errorf("updateSilenceMinutes: unable to execute transaction, err: %+v", err)
+		return err
+	}
+	return nil
 }
 
 // Deletes cron job associated with the alert
@@ -1092,7 +1236,7 @@ func (p Sqlite) GetAllMinionSearches() ([]alertutils.MinionSearch, error) {
 		alertinfo := alertutils.AlertInfo{AlertId: alert_id, AlertName: alert_name, State: state,
 			CreateTimestamp: create_timestamp, ContactId: contact_id, ContactName: contact_name}
 
-		minion_search_details := alertutils.MinionSearchDetails{Respository: minionSearchStruct.Respository,
+		minion_search_details := alertutils.MinionSearchDetails{Repository: minionSearchStruct.Repository,
 			Filename: minionSearchStruct.Filename, LineNumber: minionSearchStruct.LineNumber,
 			LogText: minionSearchStruct.LogText, LogTextHash: minionSearchStruct.LogTextHash, LogLevel: minionSearchStruct.LogLevel}
 		alerts = append(alerts, alertutils.MinionSearch{AlertInfo: alertinfo, MinionSearchDetails: minion_search_details,
@@ -1159,7 +1303,7 @@ func (p Sqlite) GetMinionSearch(alert_id string) (*alertutils.MinionSearch, erro
 		return nil, err
 	}
 
-	minion_search_details = alertutils.MinionSearchDetails{Respository: minionAlertStruct.Respository,
+	minion_search_details = alertutils.MinionSearchDetails{Repository: minionAlertStruct.Repository,
 		Filename: minionAlertStruct.Filename, LineNumber: minionAlertStruct.LineNumber,
 		LogText: minionAlertStruct.LogText, LogTextHash: minionAlertStruct.LogTextHash, LogLevel: minionAlertStruct.LogLevel}
 

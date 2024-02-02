@@ -16,6 +16,7 @@ limitations under the License.
 
  'use strict';
 
+
  function wsURL(path) {
      var protocol = (location.protocol === 'https:') ? 'wss://' : 'ws://';
      var url = protocol + location.host;
@@ -42,8 +43,13 @@ limitations under the License.
  function resetDataTable(firstQUpdate) {
      if (firstQUpdate) {
          $('#empty-response').hide();
-         $('#logs-view-controls').show();
-         $("#logs-result-container").show();
+         $("#custom-chart-tab").show();
+         let currentTab = $("#custom-chart-tab").tabs("option", "active");
+         if (currentTab == 0) {
+           $("#logs-view-controls").show();
+         } else {
+           $("#logs-view-controls").hide();
+         }
          $("#agg-result-container").hide();
          $("#data-row-container").hide();
          hideError();
@@ -57,7 +63,8 @@ limitations under the License.
  }
  
 function getColumns() {
-  if (availColNames.length == 0) {
+  let currentTab = $("#custom-code-tab").tabs("option", "active");
+  if (availColNames.length == 0 && currentTab == 0) {
     data = {
       state: "query",
       searchText: "*",
@@ -352,7 +359,88 @@ function getColumns() {
      let stDate = queryParams.get("startEpoch") || Cookies.get('startEpoch') || "now-15m";
      let endDate = queryParams.get("endEpoch") || Cookies.get('endEpoch') || "now";
      let selIndexName = queryParams.get('indexName');
-     let queryLanguage = $('#query-language-btn span').html();
+     let queryLanguage = queryParams.get("queryLanguage") ||$('#query-language-btn span').html();
+     queryLanguage = queryLanguage.replace('"', '');
+     $("#query-language-btn span").html(queryLanguage);
+    $(".query-language-option").removeClass("active");
+     if (queryLanguage == "SQL") {
+       $("#option-1").addClass("active");
+     } else if (queryLanguage == "Log QL") {
+       $("#option-2").addClass("active");
+     } else if (queryLanguage == "Splunk QL") {
+       $("#option-3").addClass("active");
+     }
+     let filterTab = queryParams.get("filterTab");
+     let filterValue = queryParams.get('searchText');
+     if(filterTab == "0" || filterTab == null){
+      if(filterValue != "*"){
+        if(filterValue.indexOf("|") != -1){
+          firstBoxSet = new Set(filterValue.split(" | ")[0].split(" "));
+          secondBoxSet = new Set(
+            filterValue
+              .split("stats ")[1]
+              .split(" BY")[0]
+              .split(/(?=[A-Z])/)
+          );
+          if (filterValue.includes(" BY ")) {
+            thirdBoxSet = new Set(filterValue.split(" BY ")[1].split(","));
+          }
+        }else{
+          firstBoxSet = new Set(filterValue.split(" "));
+        }
+        if (firstBoxSet && firstBoxSet.size > 0) {
+          let tags = document.getElementById("tags");
+          while (tags.firstChild) {
+            tags.removeChild(tags.firstChild);
+          }
+          firstBoxSet.forEach((value, i) => {
+            let tag = document.createElement("li");
+            tag.innerText = value;
+            // Add a delete button to the tag
+            tag.innerHTML += '<button class="delete-button">x</button>';
+            // Append the tag to the tags list
+            tags.appendChild(tag);
+          });
+        }
+        if (secondBoxSet && secondBoxSet.size > 0) {
+          let tags = document.getElementById("tags-second");
+          while (tags.firstChild) {
+            tags.removeChild(tags.firstChild);
+          }
+          secondBoxSet.forEach((value, i) => {
+            let tag = document.createElement("li");
+            tag.innerText = value;
+            // Add a delete button to the tag
+            tag.innerHTML += '<button class="delete-button">x</button>';
+            // Append the tag to the tags list
+            tags.appendChild(tag);
+          });
+        }
+        if (thirdBoxSet && thirdBoxSet.size > 0) {
+          let tags = document.getElementById("tags-third");
+          while (tags.firstChild) {
+            tags.removeChild(tags.firstChild);
+          }
+          thirdBoxSet.forEach((value, i) => {
+            let tag = document.createElement("li");
+            tag.innerText = value;
+            // Add a delete button to the tag
+            tag.innerHTML += '<button class="delete-button">x</button>';
+            // Append the tag to the tags list
+            
+            tags.appendChild(tag);
+          });
+        }
+      }
+        $("#query-input").val(filterValue);
+     }else{
+        $("#custom-code-tab").tabs("option", "active", 1);
+        if (filterValue === "*") {
+          $("#filter-input").val("").change();
+        } else {
+          $("#filter-input").val(filterValue).change();
+        }
+     }
      let sFrom = 0;
      if(selIndexName!==null){
          if (selIndexName.length === 0){
@@ -368,7 +456,6 @@ function getColumns() {
      selectedSearchIndex = selIndexName.split(",").join(",");
      Cookies.set('IndexList', selIndexName.split(",").join(","));
  
-     let filterValue = queryParams.get('searchText');
      if (!isNaN(stDate)) {
          stDate = Number(stDate);
          endDate = Number(endDate);
@@ -379,11 +466,7 @@ function getColumns() {
      } else {
          datePickerHandler(stDate, endDate, "");
      }
-     if (filterValue === "*") {
-         $('#filter-input').val("").change();
-     } else {
-         $('#filter-input').val(filterValue).change();
-     }
+
      selectedSearchIndex = selIndexName;
      if (!skipPushState) {
          addQSParm("searchText", filterValue);
@@ -397,7 +480,8 @@ function getColumns() {
      if (scrollingTrigger){
          sFrom = scrollFrom;
      }
- 
+
+
      return {
          'state': 'query',
          'searchText': filterValue,
@@ -464,9 +548,12 @@ function getColumns() {
          else filterValue += value;
          index++;
        });
+     }else{
+      filterValue = '*';
      }
      index = 0;
      let bothRight = 0;
+     let showError = false;
      //concat the second input box
      if (secondBoxSet && secondBoxSet.size > 0) {
        bothRight++;
@@ -479,7 +566,7 @@ function getColumns() {
      }
      index = 0;
      if (thirdBoxSet && thirdBoxSet.size > 0) {
-       bothRight++;
+      if(bothRight == 0) showError = true;
        //concat the third input box
        filterValue += " BY";
        thirdBoxSet.forEach((value, i) => {
@@ -490,9 +577,9 @@ function getColumns() {
      }
      if (filterValue == "") filterValue = "*";
      $("#query-input").val(filterValue);
-     if(bothRight == 1) $("#query-builder-btn").addClass("stop-search");
+     if(thirdBoxSet && thirdBoxSet.size > 0 && (secondBoxSet == null || secondBoxSet.size == 0)) $("#query-builder-btn").addClass("stop-search");
      else $("#query-builder-btn").removeClass("stop-search");
-   return bothRight == 1 ? "Syntax Error" : filterValue;
+   return showError ? "Searches with a Search Criteria must have an Aggregate Attribute" : filterValue;
   }
  function getSearchFilter(skipPushState, scrollingTrigger) {
    let currentTab = $("#custom-code-tab").tabs("option", "active");
@@ -550,12 +637,14 @@ function getColumns() {
  
  function getSearchFilterForSave(qname, qdesc) {
      let filterValue = filterTextQB.trim() || "*";
- 
+      let currentTab = $("#custom-code-tab").tabs("option", "active");
      return {
          'queryName': qname,
          'queryDescription': qdesc || "",
          'searchText': filterValue,
          'indexName': selectedSearchIndex,
+         'filterTab': currentTab.toString(),
+         'queryLanguage': $("#query-language-btn span").html()
      };
  }
   function processLiveTailQueryUpdate(
@@ -641,7 +730,10 @@ function getColumns() {
  
          renderAvailableFields(columnOrder);
          renderLogsGrid(columnOrder, res.hits.records);
- 
+
+        $("#logs-result-container").show();
+        $("#agg-result-container").hide();
+         
          if (res && res.hits && res.hits.totalMatched) {
              totalHits = res.hits.totalMatched
          }
@@ -669,6 +761,7 @@ function getColumns() {
  
  function processEmptyQueryResults() {
      $("#logs-result-container").hide();
+    $("#custom-chart-tab").hide();
      $("#agg-result-container").hide();
      $("#data-row-container").hide();
      $('#corner-popup').hide();
@@ -704,6 +797,7 @@ function getColumns() {
       }
       resetDashboard();
       $("#logs-result-container").hide();
+      $("#custom-chart-tab").show();
       $("#agg-result-container").show();
       aggsColumnDefs = [];
       segStatsRowData = [];
@@ -745,10 +839,14 @@ function getColumns() {
  function processCompleteUpdate(res, eventType, totalEventsSearched, timeToFirstByte, eqRel) {
      let columnOrder =[]
      let totalHits = res.totalMatched.value;
-     if (res.totalMatched.value === 0 && res.measure ===undefined) {
+     if ((res.totalMatched == 0 || res.totalMatched.value === 0) && res.measure ===undefined) {
          processEmptyQueryResults();
      }
+     if (res.measureFunctions && res.measureFunctions.length > 0) {
+       measureFunctions = res.measureFunctions;
+     }
      if (res.measure) {
+         measureInfo = res.measure;
          if (res.groupByCols) {
              columnOrder = _.uniq(_.concat(
                  res.groupByCols));
@@ -759,6 +857,7 @@ function getColumns() {
          }
          resetDashboard();
          $("#logs-result-container").hide();
+         $("#custom-chart-tab").show();
          $("#agg-result-container").show();
          aggsColumnDefs=[];
          segStatsRowData=[];
@@ -766,8 +865,13 @@ function getColumns() {
          if ((res.qtype ==="aggs-query" || res.qtype === "segstats-query") && res.bucketCount){
              totalHits = res.bucketCount;
          }
+     }else{
+      measureInfo = [];
      }
- 
+     let currentResTab = $("#custom-chart-tab").tabs("option", "active");
+     if (currentResTab == 1) {
+       timeChart();
+     }
      let totalTime = (new Date()).getTime() - startQueryTime;
      let percentComplete = res.percent_complete;
      if (res.total_rrc_count > 0){
@@ -820,6 +924,7 @@ function getColumns() {
      $('#corner-popup').hide();
      $('#empty-response').show();
      $('#logs-view-controls').hide();
+    $("#custom-chart-tab").hide();
      let el = $('#empty-response');
      $('#empty-response').empty();
      if (res && res.no_data_err && res.no_data_err.includes("No data found")){

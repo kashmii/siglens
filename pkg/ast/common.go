@@ -31,6 +31,7 @@ import (
 	"github.com/siglens/siglens/pkg/segment/reader/record"
 	"github.com/siglens/siglens/pkg/segment/structs"
 	. "github.com/siglens/siglens/pkg/segment/structs"
+	"github.com/siglens/siglens/pkg/segment/utils"
 	. "github.com/siglens/siglens/pkg/segment/utils"
 	log "github.com/sirupsen/logrus"
 )
@@ -55,8 +56,8 @@ func ProcessSingleFilter(colName string, colValue interface{}, compOpr string, v
 	case "!=":
 		opr = NotEquals
 	default:
-		log.Errorf("qid=%d, processPipeSearchMap: invalid comparison operator %v", qid, opr)
-		return nil, errors.New("processPipeSearchMap: invalid comparison operator")
+		log.Errorf("qid=%d, ProcessSingleFilter: invalid comparison operator %v", qid, opr)
+		return nil, errors.New("ProcessSingleFilter: invalid comparison operator")
 	}
 	switch t := colValue.(type) {
 	case string:
@@ -67,21 +68,26 @@ func ProcessSingleFilter(colName string, colValue interface{}, compOpr string, v
 				if valueIsRegex {
 					compiledRegex, err := regexp.Compile(t)
 					if err != nil {
-						log.Errorf("ProcessSingleFilter: Failed to compile regex for %s. This may cause search failures. Err: %v", t, err)
+						log.Errorf("qid=%d, ProcessSingleFilter: Failed to compile regex for %s. This may cause search failures. Err: %v", qid, t, err)
 					}
 					criteria := CreateTermFilterCriteria(colName, compiledRegex, opr, qid)
 					andFilterCondition = append(andFilterCondition, criteria)
 				} else {
+					negateMatch := (opr == NotEquals)
+					if opr != Equals && opr != NotEquals {
+						log.Errorf("qid=%d, ProcessSingleFilter: invalid string comparison operator %v", qid, opr)
+					}
+
 					cleanedColVal := strings.ReplaceAll(strings.TrimSpace(t), "\"", "")
 					if strings.Contains(t, "\"") {
-						criteria := createMatchPhraseFilterCriteria(colName, cleanedColVal, And, qid)
+						criteria := createMatchPhraseFilterCriteria(colName, cleanedColVal, And, negateMatch, qid)
 						andFilterCondition = append(andFilterCondition, criteria)
 					} else {
 						if strings.Contains(t, "*") {
 							criteria := CreateTermFilterCriteria(colName, colValue, opr, qid)
 							andFilterCondition = append(andFilterCondition, criteria)
 						} else {
-							criteria := createMatchFilterCriteria(colName, colValue, And, qid)
+							criteria := createMatchFilterCriteria(colName, colValue, And, negateMatch, qid)
 							andFilterCondition = append(andFilterCondition, criteria)
 						}
 					}
@@ -101,8 +107,11 @@ func ProcessSingleFilter(colName string, colValue interface{}, compOpr string, v
 				}
 			}
 		} else {
-			return nil, errors.New("processPipeSearchMap: colValue/ search Text can not be empty ")
+			return nil, errors.New("ProcessSingleFilter: colValue/ search Text can not be empty ")
 		}
+	case bool:
+		criteria := CreateTermFilterCriteria(colName, colValue, opr, qid)
+		andFilterCondition = append(andFilterCondition, criteria)
 	case json.Number:
 		if colValue.(json.Number) != "" {
 			if colName == "" {
@@ -112,20 +121,20 @@ func ProcessSingleFilter(colName string, colValue interface{}, compOpr string, v
 			andFilterCondition = append(andFilterCondition, criteria)
 
 		} else {
-			return nil, errors.New("processPipeSearchMap: colValue/ search Text can not be empty ")
+			return nil, errors.New("ProcessSingleFilter: colValue/ search Text can not be empty ")
 		}
 	case GrepValue:
 		cleanedColVal := strings.ReplaceAll(strings.TrimSpace(t.Field), "\"", "")
 		criteria := CreateTermFilterCriteria("*", cleanedColVal, opr, qid)
 		andFilterCondition = append(andFilterCondition, criteria)
 	default:
-		log.Errorf("processPipeSearchMap: Invalid colValue type %v", t)
-		return nil, errors.New("processPipeSearchMap: Invalid colValue type")
+		log.Errorf("ProcessSingleFilter: Invalid colValue type %v", t)
+		return nil, errors.New("ProcessSingleFilter: Invalid colValue type")
 	}
 	return andFilterCondition, nil
 }
 
-func createMatchPhraseFilterCriteria(k, v interface{}, opr LogicalOperator, qid uint64) *FilterCriteria {
+func createMatchPhraseFilterCriteria(k, v interface{}, opr LogicalOperator, negateMatch bool, qid uint64) *FilterCriteria {
 	//match_phrase value will always be string
 	var rtInput = strings.TrimSpace(v.(string))
 	var matchWords = make([][]byte, 0)
@@ -137,11 +146,12 @@ func createMatchPhraseFilterCriteria(k, v interface{}, opr LogicalOperator, qid 
 		MatchWords:    matchWords,
 		MatchOperator: opr,
 		MatchPhrase:   []byte(rtInput),
-		MatchType:     MATCH_PHRASE}}
+		MatchType:     MATCH_PHRASE,
+		NegateMatch:   negateMatch}}
 	return &criteria
 }
 
-func createMatchFilterCriteria(k, v interface{}, opr LogicalOperator, qid uint64) *FilterCriteria {
+func createMatchFilterCriteria(k, v interface{}, opr LogicalOperator, negateMatch bool, qid uint64) *FilterCriteria {
 	var rtInput string
 	switch vtype := v.(type) {
 	case json.Number:
@@ -169,7 +179,8 @@ func createMatchFilterCriteria(k, v interface{}, opr LogicalOperator, qid uint64
 	criteria := FilterCriteria{MatchFilter: &MatchFilter{
 		MatchColumn:   k.(string),
 		MatchWords:    matchWords,
-		MatchOperator: opr}}
+		MatchOperator: opr,
+		NegateMatch:   negateMatch}}
 
 	return &criteria
 }
@@ -218,7 +229,7 @@ func GetColValues(cname string, table string, qid uint64, orgid uint64) ([]inter
 
 func ParseTimeRange(startEpoch, endEpoch uint64, aggs *QueryAggregators, qid uint64) (*dtu.TimeRange, error) {
 	tRange := new(dtu.TimeRange)
-	if aggs != nil && aggs.TimeHistogram != nil {
+	if aggs != nil && aggs.TimeHistogram != nil && aggs.TimeHistogram.Timechart == nil {
 		tRange.StartEpochMs = aggs.TimeHistogram.StartTime
 		tRange.EndEpochMs = aggs.TimeHistogram.EndTime
 		return tRange, nil
@@ -233,4 +244,31 @@ func ParseTimeRange(startEpoch, endEpoch uint64, aggs *QueryAggregators, qid uin
 	tRange.StartEpochMs = startEpoch
 	tRange.EndEpochMs = endEpoch
 	return tRange, nil
+}
+
+func GetDefaultTimechartSpanOptions(startEpoch, endEpoch uint64, qid uint64) (*structs.SpanOptions, error) {
+	if startEpoch == 0 || endEpoch == 0 {
+		err := fmt.Errorf("GetDefaultTimechartSpanOptions: , time range not set")
+		return nil, err
+	}
+
+	duration := endEpoch - startEpoch
+
+	// 15 minutes
+	if duration <= 15*60*1000 {
+		return &structs.SpanOptions{SpanLength: &structs.SpanLength{Num: 10, TimeScalr: utils.TMSecond}}, nil
+	} else if duration <= 60*60*1000 {
+		return &structs.SpanOptions{SpanLength: &structs.SpanLength{Num: 1, TimeScalr: utils.TMMinute}}, nil
+	} else if duration <= 4*60*60*1000 {
+		return &structs.SpanOptions{SpanLength: &structs.SpanLength{Num: 5, TimeScalr: utils.TMMinute}}, nil
+	} else if duration <= 24*60*60*1000 {
+		return &structs.SpanOptions{SpanLength: &structs.SpanLength{Num: 30, TimeScalr: utils.TMMinute}}, nil
+	} else if duration <= 7*24*60*60*1000 {
+		return &structs.SpanOptions{SpanLength: &structs.SpanLength{Num: 1, TimeScalr: utils.TMHour}}, nil
+	} else if duration <= 180*24*60*60*1000 {
+		return &structs.SpanOptions{SpanLength: &structs.SpanLength{Num: 1, TimeScalr: utils.TMDay}}, nil
+	} else {
+		return &structs.SpanOptions{SpanLength: &structs.SpanLength{Num: 1, TimeScalr: utils.TMMonth}}, nil
+	}
+
 }

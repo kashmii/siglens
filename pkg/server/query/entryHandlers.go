@@ -19,9 +19,6 @@ package queryserver
 import (
 	"time"
 
-	"github.com/siglens/siglens/pkg/common/dtypeutils"
-	"github.com/siglens/siglens/pkg/utils"
-
 	"github.com/fasthttp/websocket"
 
 	"github.com/siglens/siglens/pkg/alerts/alertsHandler"
@@ -43,6 +40,16 @@ import (
 	log "github.com/sirupsen/logrus"
 	"github.com/valyala/fasthttp"
 )
+
+type VersionResponse struct {
+	Version string `json:"version"`
+}
+
+func getVersionHandler() func(ctx *fasthttp.RequestCtx) {
+	return func(ctx *fasthttp.RequestCtx) {
+		alertsHandler.ProcessVersionInfo(ctx)
+	}
+}
 
 func getHealthHandler() func(ctx *fasthttp.RequestCtx) {
 	return func(ctx *fasthttp.RequestCtx) {
@@ -199,9 +206,8 @@ var upgrader = websocket.FastHTTPUpgrader{
 }
 
 func pipeSearchWebsocketHandler(myid uint64) func(ctx *fasthttp.RequestCtx) {
-
+	instrumentation.IncrementInt64Counter(instrumentation.QUERY_COUNT, 1)
 	return func(ctx *fasthttp.RequestCtx) {
-		startTime := time.Now()
 		err := upgrader.Upgrade(ctx, func(conn *websocket.Conn) {
 			defer func() {
 				deadline := time.Now().Add(time.Second * 5)
@@ -220,24 +226,12 @@ func pipeSearchWebsocketHandler(myid uint64) func(ctx *fasthttp.RequestCtx) {
 					return
 				}
 			}()
-			pipesearch.ProcessPipeSearchWebsocket(conn, myid)
+			pipesearch.ProcessPipeSearchWebsocket(conn, myid, ctx)
 		})
 		if err != nil {
 			log.Errorf("PipeSearchWebsocketHandler: Error upgrading websocket connection %+v", err)
 			return
 		}
-
-		// Logging data to access.log
-		// timeStamp <logged-in user> <request URI> <request body> <response status code> <elapsed time in ms>
-		duration := time.Since(startTime).Milliseconds()
-		utils.AddAccessLogEntry(dtypeutils.AccessLogData{
-			TimeStamp:   time.Now().Format("2006-01-02 15:04:05"),
-			UserName:    "No-User", // TODO : Add logged in user when user auth is implemented
-			URI:         ctx.Request.URI().String(),
-			RequestBody: string(ctx.PostBody()),
-			StatusCode:  ctx.Response.StatusCode(),
-			Duration:    duration,
-		}, "access.log")
 	}
 }
 
@@ -307,6 +301,17 @@ func createDashboardHandler() func(ctx *fasthttp.RequestCtx) {
 	}
 }
 
+func favoriteDashboardHandler() fasthttp.RequestHandler {
+	return func(ctx *fasthttp.RequestCtx) {
+		dashboards.ProcessFavoriteRequest(ctx)
+	}
+}
+
+func getFavoriteDashboardIdsHandler() func(ctx *fasthttp.RequestCtx) {
+	return func(ctx *fasthttp.RequestCtx) {
+		dashboards.ProcessListFavoritesRequest(ctx, 0)
+	}
+}
 func getDashboardIdsHandler() func(ctx *fasthttp.RequestCtx) {
 	return func(ctx *fasthttp.RequestCtx) {
 		dashboards.ProcessListAllRequest(ctx, 0)
@@ -387,6 +392,12 @@ func createAlertHandler() func(ctx *fasthttp.RequestCtx) {
 	}
 }
 
+func silenceAlertHandler() func(ctx *fasthttp.RequestCtx) {
+	return func(ctx *fasthttp.RequestCtx) {
+		alertsHandler.ProcessSilenceAlertRequest(ctx)
+	}
+}
+
 func getAlertHandler() func(ctx *fasthttp.RequestCtx) {
 	return func(ctx *fasthttp.RequestCtx) {
 		alertsHandler.ProcessGetAlertRequest(ctx)
@@ -408,6 +419,12 @@ func getAllMinionSearchesHandler() func(ctx *fasthttp.RequestCtx) {
 func updateAlertHandler() func(ctx *fasthttp.RequestCtx) {
 	return func(ctx *fasthttp.RequestCtx) {
 		alertsHandler.ProcessUpdateAlertRequest(ctx)
+	}
+}
+
+func alertHistoryHandler() func(ctx *fasthttp.RequestCtx) {
+	return func(ctx *fasthttp.RequestCtx) {
+		alertsHandler.ProcessAlertHistoryRequest(ctx)
 	}
 }
 
@@ -479,7 +496,7 @@ func liveTailHandler(myid uint64) func(ctx *fasthttp.RequestCtx) {
 					return
 				}
 			}()
-			pipesearch.ProcessPipeSearchWebsocket(conn, myid)
+			pipesearch.ProcessPipeSearchWebsocket(conn, myid, ctx)
 		})
 		if err != nil {
 			log.Errorf("liveTailHandler: Error upgrading websocket connection %+v", err)
@@ -494,8 +511,15 @@ func searchTracesHandler() func(ctx *fasthttp.RequestCtx) {
 		tracinghandler.ProcessSearchTracesRequest(ctx, 0)
 	}
 }
+
 func getDependencyGraphHandler() func(ctx *fasthttp.RequestCtx) {
 	return func(ctx *fasthttp.RequestCtx) {
 		tracinghandler.ProcessDependencyRequest(ctx, 0)
+	}
+}
+
+func ganttChartHandler() func(ctx *fasthttp.RequestCtx) {
+	return func(ctx *fasthttp.RequestCtx) {
+		tracinghandler.ProcessGanttChartRequest(ctx, 0)
 	}
 }

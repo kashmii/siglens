@@ -19,12 +19,14 @@ package pipesearch
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 
 	"github.com/siglens/siglens/pkg/ast"
 	"github.com/siglens/siglens/pkg/ast/logql"
 	"github.com/siglens/siglens/pkg/ast/spl"
 	"github.com/siglens/siglens/pkg/ast/sql"
 	"github.com/siglens/siglens/pkg/config"
+	"github.com/siglens/siglens/pkg/segment/aggregations"
 	"github.com/siglens/siglens/pkg/segment/query/metadata"
 	"github.com/siglens/siglens/pkg/segment/structs"
 	. "github.com/siglens/siglens/pkg/segment/structs"
@@ -43,6 +45,12 @@ func ParseRequest(searchText string, startEpoch, endEpoch uint64, qid uint64, qu
 		return nil, nil, parsingError
 	}
 
+	if boolNode == nil && queryAggs == nil {
+		err := fmt.Errorf("qid=%d, ParseRequest: boolNode and queryAggs are nil for searchText: %v", qid, searchText)
+		log.Errorf(err.Error())
+		return nil, nil, err
+	}
+
 	tRange, err := ast.ParseTimeRange(startEpoch, endEpoch, queryAggs, qid)
 	if err != nil {
 		log.Errorf("qid=%d, Search ParseRequest: parseTimeRange error: %v", qid, err)
@@ -59,6 +67,21 @@ func ParseRequest(searchText string, startEpoch, endEpoch uint64, qid uint64, qu
 			queryAggs.Sort = nil
 			if len(queryAggs.GroupByRequest.GroupByColumns) == 1 && queryAggs.GroupByRequest.GroupByColumns[0] == "*" {
 				queryAggs.GroupByRequest.GroupByColumns = metadata.GetAllColNames([]string{indexName})
+			}
+			if queryAggs.TimeHistogram != nil && queryAggs.TimeHistogram.Timechart != nil {
+				if queryAggs.TimeHistogram.Timechart.BinOptions != nil &&
+					queryAggs.TimeHistogram.Timechart.BinOptions.SpanOptions != nil &&
+					queryAggs.TimeHistogram.Timechart.BinOptions.SpanOptions.DefaultSettings {
+					spanOptions, err := ast.GetDefaultTimechartSpanOptions(startEpoch, endEpoch, qid)
+					if err != nil {
+						log.Errorf("qid=%d, Search ParseRequest: GetDefaultTimechartSpanOptions error: %v", qid, err)
+						return nil, nil, err
+					}
+					queryAggs.TimeHistogram.Timechart.BinOptions.SpanOptions = spanOptions
+					queryAggs.TimeHistogram.IntervalMillis = aggregations.GetIntervalInMillis(spanOptions.SpanLength.Num, spanOptions.SpanLength.TimeScalr)
+				}
+				queryAggs.TimeHistogram.StartTime = startEpoch
+				queryAggs.TimeHistogram.EndTime = endEpoch
 			}
 		} else if queryAggs.MeasureOperations != nil {
 			queryAggs.EarlyExit = false
@@ -134,12 +157,13 @@ func parsePipeSearch(searchText string, queryLanguage string, qid uint64) (*ASTN
 		log.Errorf("qid=%d, parsePipeSearch: PEG Parse error: %v:%v", qid, err, getParseError(err))
 		return nil, nil, getParseError(err)
 	}
+
 	result, err := json.MarshalIndent(res, "", "   ")
-	if err != nil {
-		log.Errorf("qid=%d, parsePipeSearch: MarshalIndent error: %v", qid, err)
-		return nil, nil, nil
+	if err == nil {
+		log.Infof("qid=%d, parsePipeSearch output:\n%v\n", qid, string(result))
+	} else {
+		log.Infof("qid=%d, parsePipeSearch output:\n%v\n", qid, res)
 	}
-	log.Infof("qid=%d, parsePipeSearch output:\n%v\n", qid, string(result))
 
 	queryJson := res.(ast.QueryStruct).SearchFilter
 	pipeCommandsJson := res.(ast.QueryStruct).PipeCommands
@@ -245,6 +269,13 @@ func searchPipeCommandsToASTnode(node *QueryAggregators, qid uint64) (*QueryAggr
 			log.Errorf("qid=%d, searchPipeCommandsToASTnode : parseGroupBySegLevelStats error: %v", qid, err)
 			return nil, err
 		}
+		pipeCommands.TimeHistogram = node.TimeHistogram
+	case TransactionType:
+		pipeCommands, err = parseTransactionRequest(node.TransactionArguments, qid)
+		if err != nil {
+			log.Errorf("qid=%d, searchPipeCommandsToASTnode : parseTransactionRequest error: %v", qid, err)
+			return nil, err
+		}
 	default:
 		log.Errorf("searchPipeCommandsToASTnode : node type %d not supported", node.PipeCommandType)
 		return nil, errors.New("searchPipeCommandsToASTnode : node type not supported")
@@ -272,6 +303,8 @@ func parseGroupBySegLevelStats(node *structs.GroupByRequest, bucketLimit int, qi
 		var tempMeasureAgg = &MeasureAggregator{}
 		tempMeasureAgg.MeasureCol = parsedMeasureAgg.MeasureCol
 		tempMeasureAgg.MeasureFunc = parsedMeasureAgg.MeasureFunc
+		tempMeasureAgg.ValueColRequest = parsedMeasureAgg.ValueColRequest
+		tempMeasureAgg.StrEnc = parsedMeasureAgg.StrEnc
 		aggNode.GroupByRequest.MeasureOperations = append(aggNode.GroupByRequest.MeasureOperations, tempMeasureAgg)
 	}
 	if node.GroupByColumns != nil {
@@ -289,8 +322,45 @@ func parseSegLevelStats(node []*structs.MeasureAggregator, qid uint64) (*QueryAg
 		var tempMeasureAgg = &MeasureAggregator{}
 		tempMeasureAgg.MeasureCol = parsedMeasureAgg.MeasureCol
 		tempMeasureAgg.MeasureFunc = parsedMeasureAgg.MeasureFunc
+		tempMeasureAgg.ValueColRequest = parsedMeasureAgg.ValueColRequest
+		tempMeasureAgg.StrEnc = parsedMeasureAgg.StrEnc
 		aggNode.MeasureOperations = append(aggNode.MeasureOperations, tempMeasureAgg)
 	}
+	return aggNode, nil
+}
+
+func parseTransactionRequest(node *structs.TransactionArguments, qid uint64) (*QueryAggregators, error) {
+	aggNode := &QueryAggregators{}
+	aggNode.PipeCommandType = TransactionType
+	aggNode.TransactionArguments = &TransactionArguments{}
+	aggNode.TransactionArguments.Fields = node.Fields
+	aggNode.TransactionArguments.StartsWith = node.StartsWith
+	aggNode.TransactionArguments.EndsWith = node.EndsWith
+
+	if node.StartsWith != nil {
+		if node.StartsWith.SearchNode != nil {
+			boolNode := &ASTNode{}
+			err := SearchQueryToASTnode(node.StartsWith.SearchNode.(*ast.Node), boolNode, qid)
+			if err != nil {
+				log.Errorf("qid=%d, parseTransactionRequest: SearchQueryToASTnode error: %v", qid, err)
+				return nil, err
+			}
+			aggNode.TransactionArguments.StartsWith.SearchNode = boolNode
+		}
+	}
+
+	if node.EndsWith != nil {
+		if node.EndsWith.SearchNode != nil {
+			boolNode := &ASTNode{}
+			err := SearchQueryToASTnode(node.EndsWith.SearchNode.(*ast.Node), boolNode, qid)
+			if err != nil {
+				log.Errorf("qid=%d, parseTransactionRequest: SearchQueryToASTnode error: %v", qid, err)
+				return nil, err
+			}
+			aggNode.TransactionArguments.EndsWith.SearchNode = boolNode
+		}
+	}
+	aggNode.EarlyExit = false
 	return aggNode, nil
 }
 
@@ -362,6 +432,9 @@ func parseColumnsCmd(node *structs.OutputTransforms, qid uint64) (*QueryAggregat
 		}
 		if node.LetColumns.RenameColRequest != nil {
 			aggNode.OutputTransforms.LetColumns.RenameColRequest = node.LetColumns.RenameColRequest
+		}
+		if node.LetColumns.DedupColRequest != nil {
+			aggNode.OutputTransforms.LetColumns.DedupColRequest = node.LetColumns.DedupColRequest
 		}
 	}
 	if node.FilterRows != nil {

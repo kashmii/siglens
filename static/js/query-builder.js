@@ -1,18 +1,38 @@
 "use strict";
+let chart;
 $(function () {
   $("#custom-code-tab").tabs();
+  $("#custom-chart-tab").tabs();
+  $('#logs-view-controls').hide();
 });
 $("#custom-code-tab").tabs({
   activate: function (event, ui) {
+    let currentResTab = $("#custom-chart-tab").tabs("option", "active");
+    if(currentResTab == 1){
+      timeChart();
+    }
     let currentTab = $("#custom-code-tab").tabs("option", "active");
     if (currentTab == 0) {
+      let filterValue = $("#filter-input").val();
+      if (filterValue != "" && $("#query-input").val() == "*") $("#query-input").val(filterValue);
       $(".query-language-option").removeClass("active");
       $("#query-language-options #option-3").addClass("active");
       $("#query-language-btn span").html("Splunk QL");
       displayQueryLangToolTip("3");
     }else{
       let filterValue = $("#query-input").val();
-     if (filterValue != "") $("#filter-input").val(filterValue);
+     if (filterValue != "" && ($("#filter-input").val() == "*" || $("#filter-input").val() == "")) $("#filter-input").val(filterValue);
+    }
+  },
+});
+$("#custom-chart-tab").tabs({
+  activate: function (event, ui) {
+    let currentTab = $("#custom-chart-tab").tabs("option", "active");
+    if (currentTab == 0) {
+      $("#logs-view-controls").show();
+    } else {
+      $("#logs-view-controls").hide();
+      timeChart();
     }
   },
 });
@@ -49,7 +69,9 @@ $(document).ready(function () {
   if (firstBoxSet.size > 0) $("#search-filter-text").hide();
   else $("#search-filter-text").show();
   setShowColumnInfoDialog();
+  timeChart();
 });
+
 const tags = document.getElementById("tags");
 const tagSecond = document.getElementById("tags-second");
 const tagThird = document.getElementById("tags-third");
@@ -129,7 +151,7 @@ function filterStart(evt) {
   if (availColNames.length == 0) getColumns();
   $("#column-first")
     .autocomplete({
-      source: availColNames,
+      source: availColNames.sort(),
       minLength: 0,
       maxheight: 100,
       select: function (event, ui) {
@@ -137,13 +159,15 @@ function filterStart(evt) {
         //when the column name is not a number, the symbols can only be = && !=
         availSymbol = ["=", "!="];
         valuesOfColumn.clear();
+        let curIsNum = false;
         for (let i = 0; i < availColNames.length; i++) {
           if (ui.item.value == ColumnsIsNum[i]) {
-            ifCurIsNum = true;
+            curIsNum = true;
             availSymbol = ["=", "!=", "<=", ">=", ">", "<"];
             break;
           }
         }
+        ifCurIsNum = curIsNum;
         $("#symbol").val("");
         $("#value-first").val("");
         //check if complete btn can click
@@ -362,7 +386,7 @@ function secondFilterComplete(evt) {
 function getSearchText() {
   let filterValue = getQueryBuilderCode();
   if (filterValue != "") $("#query-input").val(filterValue);
-  if (filterValue == "Syntax Error") $("#query-builder-btn").addClass("stop-search");
+  if (filterValue == "Searches with a Search Criteria must have an Aggregate Attribute") $("#query-builder-btn").addClass("stop-search");
   else $("#query-builder-btn").removeClass("stop-search");
 }
 function cancelInfo(evt) {
@@ -408,7 +432,7 @@ function ThirdCancelInfo(event) {
 
 $("#column-second")
   .autocomplete({
-    source: calculations,
+    source: calculations.sort(),
     minLength: 0,
     maxheight: 100,
     select: function (event, ui) {
@@ -420,7 +444,7 @@ $("#column-second")
       $("#completed-second").attr("disabled", true);
       $("#value-second")
         .autocomplete({
-          source: columnInfo,
+          source: columnInfo.sort(),
           minLength: 0,
           select: function (event, ui) {
             let secVal = $("#column-second").val();
@@ -474,7 +498,7 @@ function getValuesofColumn(chooseColumn) {
     let arr = Array.from(valuesOfColumn);
     $("#value-first")
       .autocomplete({
-        source: arr,
+        source: arr.sort(),
         minLength: 0,
         select: function (event, ui) {
           //check if complete btn can click
@@ -515,5 +539,116 @@ function setShowColumnInfoDialog(){
     $("#show-record-popup").dialog("open");
     $(".ui-widget-overlay").addClass("opacity-75");
     // return false;
+  });
+}
+function convertTimestamp(timestampString) {  
+  var timestamp = parseInt(timestampString); 
+  var date = new Date(timestamp);
+  
+  var year = date.getFullYear(); 
+  var month = ("0" + (date.getMonth() + 1)).slice(-2);
+  var day = ("0" + date.getDate()).slice(-2);  
+  
+  var hours = ("0" + date.getHours()).slice(-2); 
+  var minutes = ("0" + date.getMinutes()).slice(-2);  
+  var seconds = ("0" + date.getSeconds()).slice(-2);
+  
+  var readableDate = year + "-" + month + "-" + day + " " + hours + ":" + minutes + ":" + seconds;  
+  return readableDate;  
+}  
+const resizeObserver = new ResizeObserver((entries) => {
+  if (chart != null && chart != "" && chart != undefined) {
+    let height = document
+      .getElementById("custom-code-tab")
+      .getBoundingClientRect().height;
+    let width = document
+        .getElementById("columnChart")
+        .getBoundingClientRect().width;
+    chart.resize({
+      height: window.innerHeight - height - 60,
+      width: width - 20,
+    });
+  }
+});
+resizeObserver.observe(document.getElementById("columnChart"));
+function timeChart() {
+  if (isTimechart) {
+    $("#columnChart").show();
+    $("#hideGraph").hide();
+  }else{
+    $("#columnChart").hide();
+    $("#hideGraph").show();
+    return;
+  }
+  // Extract data for ECharts
+  var timestamps = measureInfo.map((item) => convertTimestamp(item.GroupByValues[0]));
+  var seriesData = measureFunctions.map(function (measureFunction) {
+    return {
+      name: measureFunction,
+      type: "bar",
+      data: measureInfo.map(function (item) {
+        return item.MeasureVal[measureFunction] || 0;
+      }),
+    };
+  });
+
+  // ECharts configuration
+  var option = {
+    tooltip: {
+      trigger: "item",
+      formatter: function (params) {
+        return params.seriesName + ": " + params.value;
+      },
+    },
+    legend: {
+      textStyle: {
+        color: "#6e7078",
+        fontSize: 12,
+      },
+      data: measureFunctions,
+      type: "scroll", // Enable folding functionality
+      orient: "vertical",
+      right: 10,
+      top: "middle",
+      align: "left",
+      height: "70%",
+      width: 150,
+    },
+    grid: {
+      left: 10,
+      right: 220,
+      containLabel: true,
+    },
+    xAxis: {
+      type: "category",
+      data: timestamps,
+      scale: true,
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: "value",
+      scale: true,
+      splitLine: { show: false },
+    },
+    series: seriesData,
+  };
+
+  // Initialize ECharts
+  let charId = document.getElementById("columnChart");
+  if (chart != null && chart != "" && chart != undefined) {
+    echarts.dispose(chart);
+  }
+  chart = echarts.init(charId);
+  // Set the configuration to the chart
+  chart.setOption(option);
+  let height = document
+    .getElementById("custom-code-tab")
+    .getBoundingClientRect().height;
+  let width = document
+    .getElementById("columnChart")
+    .getBoundingClientRect().width;
+  chart.resize({
+    height: window.innerHeight - height - 60,
+    width: width - 20,
   });
 }

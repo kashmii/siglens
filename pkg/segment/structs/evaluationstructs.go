@@ -17,6 +17,7 @@ limitations under the License.
 package structs
 
 import (
+	"bytes"
 	"fmt"
 	"math"
 	"net"
@@ -25,8 +26,10 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/axiomhq/hyperloglog"
 	"github.com/dustin/go-humanize"
 
 	"github.com/siglens/siglens/pkg/segment/utils"
@@ -67,18 +70,55 @@ type RexExpr struct {
 type StatisticExpr struct {
 	StatisticFunctionMode StatisticFunctionMode
 	Limit                 string
-	Options               *Options
+	StatisticOptions      *StatisticOptions
 	FieldList             []string //Must have FieldList
 	ByClause              []string
 }
 
-type Options struct {
+type StatisticOptions struct {
 	CountField   string
 	OtherStr     string
 	PercentField string
 	ShowCount    bool
 	ShowPerc     bool
 	UseOther     bool
+}
+
+type DedupExpr struct {
+	Limit              uint64
+	FieldList          []string // Must have FieldList
+	DedupOptions       *DedupOptions
+	DedupSortEles      []*DedupSortElement
+	DedupSortAscending []int // Derived from DedupSortEles.SortByAsc values.
+
+	// DedupCombinations maps combinations to a map mapping the record index
+	// (of all included records for this combination) to the sort values for
+	// that record. For example, if Limit is 3, each inner map will have at
+	// most 3 entries and will store the index and sort values of the top 3
+	// records for that combination.
+	DedupCombinations map[string]map[int][]DedupSortValue
+	PrevCombination   string
+
+	DedupRecords          map[string]map[string]interface{}
+	NumProcessedSegments  uint64
+	ProcessedSegmentsLock sync.Mutex
+}
+
+type DedupOptions struct {
+	Consecutive bool
+	KeepEmpty   bool
+	KeepEvents  bool
+}
+
+type DedupSortElement struct {
+	SortByAsc bool
+	Op        string
+	Field     string
+}
+
+type DedupSortValue struct {
+	Val         string
+	InterpretAs string // Should be "ip", "num", "str", "auto", or ""
 }
 
 // See ValueExprMode type definition for which fields are valid for each mode.
@@ -146,6 +186,62 @@ type ConditionExpr struct {
 	FalseValue *ValueExpr
 }
 
+type TimechartExpr struct {
+	TcOptions  *TcOptions
+	BinOptions *BinOptions
+	SingleAgg  *SingleAgg
+	ByField    string // group by this field inside each time range bucket (timechart)
+	LimitExpr  *LimitExpr
+}
+
+type LimitExpr struct {
+	IsTop          bool // True: keeps the N highest scoring distinct values of the split-by field
+	Num            int
+	LimitScoreMode LimitScoreMode
+}
+
+type SingleAgg struct {
+	MeasureOperations []*MeasureAggregator
+	//Split By clause
+}
+
+type TcOptions struct {
+	BinOptions *BinOptions
+	UseNull    bool
+	UseOther   bool
+	NullStr    string
+	OtherStr   string
+}
+
+type BinOptions struct {
+	SpanOptions *SpanOptions
+}
+
+type SpanOptions struct {
+	DefaultSettings bool
+	SpanLength      *SpanLength
+}
+
+type SpanLength struct {
+	Num       int
+	TimeScalr utils.TimeUnit
+}
+
+type SplitByClause struct {
+	Field     string
+	TcOptions *TcOptions
+	// Where clause: to be finished
+}
+
+// This structure is used to store values which are not within limit. And These values will be merged into the 'other' category.
+type TMLimitResult struct {
+	ValIsInLimit     map[string]bool
+	GroupValScoreMap map[string]*utils.CValueEnclosure
+	Hll              *hyperloglog.Sketch
+	StrSet           map[string]struct{}
+	OtherCValArr     []*utils.CValueEnclosure
+}
+
 type BoolOperator uint8
 
 const (
@@ -167,6 +263,13 @@ const (
 	REMPhrase   = iota //Rename with a phrase
 	REMRegex           //Rename fields with similar names using a wildcard
 	REMOverride        //Rename to a existing field
+)
+
+type LimitScoreMode uint8
+
+const (
+	LSMBySum  = iota // If only a single aggregation is specified, the score is based on the sum of the values in the aggregation
+	LSMByFreq        // Otherwise the score is based on the frequency of the by field's val
 )
 
 type ValueExprMode uint8
@@ -617,15 +720,15 @@ func (self *StatisticExpr) OverrideGroupByCol(bucketResult *BucketResult, resTot
 
 	cellValueStr := ""
 	for keyIndex, groupByCol := range bucketResult.GroupByKeys {
-		if !self.Options.ShowCount || !self.Options.ShowPerc || (self.Options.CountField != groupByCol && self.Options.PercentField != groupByCol) {
+		if !self.StatisticOptions.ShowCount || !self.StatisticOptions.ShowPerc || (self.StatisticOptions.CountField != groupByCol && self.StatisticOptions.PercentField != groupByCol) {
 			continue
 		}
 
-		if self.Options.ShowCount && self.Options.CountField == groupByCol {
+		if self.StatisticOptions.ShowCount && self.StatisticOptions.CountField == groupByCol {
 			cellValueStr = strconv.FormatUint(bucketResult.ElemCount, 10)
 		}
 
-		if self.Options.ShowPerc && self.Options.PercentField == groupByCol {
+		if self.StatisticOptions.ShowPerc && self.StatisticOptions.PercentField == groupByCol {
 			percent := float64(bucketResult.ElemCount) / float64(resTotal) * 100
 			cellValueStr = fmt.Sprintf("%.6f", percent)
 		}
@@ -648,7 +751,7 @@ func (self *StatisticExpr) OverrideGroupByCol(bucketResult *BucketResult, resTot
 }
 
 func (self *StatisticExpr) SetCountToStatRes(statRes map[string]utils.CValueEnclosure, elemCount uint64) {
-	statRes[self.Options.CountField] = utils.CValueEnclosure{
+	statRes[self.StatisticOptions.CountField] = utils.CValueEnclosure{
 		Dtype: utils.SS_DT_UNSIGNED_NUM,
 		CVal:  elemCount,
 	}
@@ -656,7 +759,7 @@ func (self *StatisticExpr) SetCountToStatRes(statRes map[string]utils.CValueEncl
 
 func (self *StatisticExpr) SetPercToStatRes(statRes map[string]utils.CValueEnclosure, elemCount uint64, resTotal uint64) {
 	percent := float64(elemCount) / float64(resTotal) * 100
-	statRes[self.Options.PercentField] = utils.CValueEnclosure{
+	statRes[self.StatisticOptions.PercentField] = utils.CValueEnclosure{
 		Dtype: utils.SS_DT_STRING,
 		CVal:  fmt.Sprintf("%.6f", percent),
 	}
@@ -1379,4 +1482,76 @@ func getValueAsFloat(fieldToValue map[string]utils.CValueEnclosure, field string
 	}
 
 	return 0, fmt.Errorf("Cannot convert CValueEnclosure %v to float", enclosure)
+}
+
+func (self *DedupSortValue) Compare(other *DedupSortValue) (int, error) {
+	switch self.InterpretAs {
+	case "ip":
+		selfIP := net.ParseIP(self.Val)
+		otherIP := net.ParseIP(other.Val)
+		if selfIP == nil || otherIP == nil {
+			return 0, fmt.Errorf("DedupSortValue.Compare: cannot parse IP address")
+		}
+		return bytes.Compare(selfIP, otherIP), nil
+	case "num":
+		selfFloat, selfErr := strconv.ParseFloat(self.Val, 64)
+		otherFloat, otherErr := strconv.ParseFloat(other.Val, 64)
+		if selfErr != nil || otherErr != nil {
+			return 0, fmt.Errorf("DedupSortValue.Compare: cannot parse %v and %v as float", self.Val, other.Val)
+		}
+
+		if selfFloat == otherFloat {
+			return 0, nil
+		} else if selfFloat < otherFloat {
+			return -1, nil
+		} else {
+			return 1, nil
+		}
+	case "str":
+		return strings.Compare(self.Val, other.Val), nil
+	case "auto", "":
+		selfFloat, selfErr := strconv.ParseFloat(self.Val, 64)
+		otherFloat, otherErr := strconv.ParseFloat(other.Val, 64)
+		if selfErr == nil && otherErr == nil {
+			if selfFloat == otherFloat {
+				return 0, nil
+			} else if selfFloat < otherFloat {
+				return -1, nil
+			} else {
+				return 1, nil
+			}
+		}
+
+		selfIp := net.ParseIP(self.Val)
+		otherIp := net.ParseIP(other.Val)
+		if selfIp != nil && otherIp != nil {
+			return bytes.Compare(selfIp, otherIp), nil
+		}
+
+		return strings.Compare(self.Val, other.Val), nil
+	default:
+		return 0, fmt.Errorf("DedupSortValue.Compare: invalid InterpretAs value: %v", self.InterpretAs)
+	}
+}
+
+// The `ascending` slice should have the same length as `a` and `b`. Moreover,
+// each element of `ascending` should be either +1 or -1; +1 means higher
+// values get sorted higher, and -1 means lower values get sorted higher.
+func CompareSortValueSlices(a []DedupSortValue, b []DedupSortValue, ascending []int) (int, error) {
+	if len(a) != len(b) || len(a) != len(ascending) {
+		return 0, fmt.Errorf("CompareSortValueSlices: slices have different lengths")
+	}
+
+	for i := 0; i < len(a); i++ {
+		comp, err := a[i].Compare(&b[i])
+		if err != nil {
+			return 0, fmt.Errorf("CompareSortValueSlices: %v", err)
+		}
+
+		if comp != 0 {
+			return comp * ascending[i], nil
+		}
+	}
+
+	return 0, nil
 }

@@ -31,7 +31,6 @@ $(document).ready(function () {
         $('body').attr('data-theme', theme);
     }
     $('.theme-btn').on('click', themePickerHandler);
-    displayNavbar();
     getAllAlerts();
 
     $('#new-alert-rule').on('click',function(){
@@ -54,7 +53,6 @@ function getAllAlerts(){
         displayAllAlerts(res.alerts);
     })
 }
-
 class btnRenderer {
 	init(params) {
         this.eGui = document.createElement('span');
@@ -94,7 +92,11 @@ class btnRenderer {
 
         function showPrompt(event) {
             event.stopPropagation();
+            const alertRuleName = params.data.alertName; 
+            const confirmationMessage = `Are you sure you want to delete the "<strong>${alertRuleName}</strong>" alert?`;
+
 			$('.popupOverlay, .popupContent').addClass('active');
+            $('#delete-alert-name').html(confirmationMessage);
 
             $('#cancel-btn, .popupOverlay, #delete-btn').click(function () {
                 $('.popupOverlay, .popupContent').removeClass('active');
@@ -151,6 +153,7 @@ const alertGridOptions = {
 	rowData: alertRowData,
 	animateRows: true,
 	rowHeight: 44,
+    headerHeight:32,
 	defaultColDef: {
 		icons: {
 			sortAscending: '<i class="fa fa-sort-alpha-up"/>',

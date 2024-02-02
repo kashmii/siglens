@@ -53,6 +53,22 @@ async function getAllDefaultDashboards() {
 	})
 	return serverResponse
 }
+async function getAllFavoriteDashboards() {
+    let serverResponse = []
+    await $.ajax({
+        method: 'get',
+        url: 'api/dashboards/listfavorites',
+        headers: {
+            'Content-Type': 'application/json; charset=utf-8',
+            'Accept': '*/*'
+        },
+        crossDomain: true,
+        dataType: 'json',
+    }).then(function (res) {
+		serverResponse = res;
+    })
+    return serverResponse
+}
 
 function createDashboard() {
 	$('.popupOverlay, .popupContent').addClass('active');
@@ -116,24 +132,39 @@ function createDashboard() {
   
 		  var queryString = "?id=" + Object.keys(res)[0];
 		  window.location.href = "../dashboard.html" + queryString;
-		});
+		}).catch(function (updateError) {
+			if (updateError.status === 409) {
+				$('.error-tip').text('Dashboard name already exists!');
+				$('.error-tip').addClass('active');
+				$('.popupOverlay, .popupContent').addClass('active');
+				attachEventHandlers();
+			}
+		  });
 	  }
 	}
-  
-	$('#save-dbbtn').click(function () {
-	  createDashboardWithInput();
-	});
-  
-	$(document).keypress(function(event){
-		if(event.keyCode == '13'){
+	// method to attach event handlers to avoid redundant event handlers
+	function attachEventHandlers() {
+		$('#save-dbbtn').on('click', function () {
 			createDashboardWithInput();
-		}
-	});
+		});
 
-	$('#cancel-dbbtn, .popupOverlay').click(function () {
-	  $('.popupOverlay, .popupContent').removeClass('active');
-	  $('.error-tip').removeClass('active');
-	});
+		$(document).on('keypress', function(event){
+			if(event.keyCode == '13'){
+				event.preventDefault();
+				createDashboardWithInput();
+			}
+		});
+
+		$('#cancel-dbbtn, .popupOverlay').on('click', function () {
+			$("#db-name").val("");
+			$("#db-description").val("");		
+			$('.popupOverlay, .popupContent').removeClass('active');
+			$('.error-tip').removeClass('active');
+		});
+	}
+
+	// Attach event handlers initially
+	attachEventHandlers();
 }
 
 function createSiglensDashboard(inputdbname) {
@@ -177,136 +208,179 @@ function createSiglensDashboard(inputdbname) {
 }
 
 class btnRenderer {
-	init(params) {
-		this.eGui = document.createElement('span');
-		this.eGui.innerHTML = `<div id="dashboard-grid-btn">
-			 
-				<button class='btn' id="viewbutton" title="Open dashboard"></button>
-				<button class="btn-simple" id="delbutton" title="Delete dashboard"></button>
-				<button class="btn-duplicate" id="duplicateButton" title="Duplicate dashboard"></button>
-				</div>`;
-		this.vButton = this.eGui.querySelector('.btn');
-		this.dButton = this.eGui.querySelector('.btn-simple');
-		this.duplicateButton = this.eGui.querySelector('.btn-duplicate');
+    init(params) {
+		const starOutlineURL = 'url("../assets/star-outline.svg")';
+        const starFilledURL = 'url("../assets/star-filled.svg")';
 
-		function view() {
+        this.eGui = document.createElement('span');
+        this.eGui.innerHTML = `<div id="dashboard-grid-btn">
+             
+                <button class='btn' id="viewbutton" title="Open dashboard"></button>
+                <button class="btn-simple" id="delbutton" title="Delete dashboard"></button>
+                <button class="btn-duplicate" id="duplicateButton" title="Duplicate dashboard"></button>
+                <button class="star-icon" id="favbutton" title="Mark as favorite" ></button>
+                </div>`;
+        this.vButton = this.eGui.querySelector('.btn');
+        this.dButton = this.eGui.querySelector('.btn-simple');
+        this.duplicateButton = this.eGui.querySelector('.btn-duplicate');
+        this.starIcon=this.eGui.querySelector('.star-icon');
+        this.starIcon.style.backgroundImage = favoriteDBsSet.has(params.data.uniqId) ? starFilledURL : starOutlineURL;
+
+		let defaultDashboardIds = [
+            "10329b95-47a8-48df-8b1d-0a0a01ec6c42",
+            "a28f485c-4747-4024-bb6b-d230f101f852",
+            "bd74f11e-26c8-4827-bf65-c0b464e1f2a4",
+            "53cb3dde-fd78-4253-808c-18e4077ef0f1"
+        ];
+
+        if (defaultDashboardIds.includes(params.data.uniqId)) {
+            this.dButton.disabled = true;
+            this.dButton.title = "Delete disabled";
+			this.dButton.classList.add('default-dashboard-delete'); 
+        }
+
+        function view() {
+            $.ajax({
+                method: 'get',
+                url: 'api/dashboards/' + params.data.uniqId,
+                headers: {
+                    'Content-Type': 'application/json; charset=utf-8',
+                    Accept: '*/*',
+                },
+                crossDomain: true,
+                dataType: 'json',
+            }).then(function (res) {
+                var queryString = "?id=" + params.data.uniqId;
+                window.location.href = "../dashboard.html" + queryString;
+            });
+        }
+
+        function deletedb() {
+            $.ajax({
+                method: 'get',
+                url: 'api/dashboards/delete/' + params.data.uniqId,
+                headers: {
+                    'Content-Type': 'application/json; charset=utf-8',
+                    Accept: '*/*',
+                },
+                crossDomain: true,
+            }).then(function () {
+                let deletedRowID = params.data.rowId;
+                dbgridOptions.api.applyTransaction({
+                    remove: [{ rowId: deletedRowID }],
+                });
+            });
+        }
+
+        function duplicatedb() {
+            $.ajax({
+                method: 'get',
+                url: 'api/dashboards/' + params.data.uniqId,
+                headers: {
+                    'Content-Type': 'application/json; charset=utf-8',
+                    Accept: '*/*',
+                },
+                crossDomain: true,
+                dataType: 'json',
+            }).then(function (res) {
+                let duplicatedDBName = res.name + "-Copy";
+                let duplicatedDescription = res.description;
+                let duplicatedPanels = res.panels;
+                let duplicateTimeRange = res.timeRange;
+                let duplicateRefresh = res.refresh;
+                let uniqIDdb;
+                $.ajax({
+                    method: "post",
+                    url: "api/dashboards/create",
+                    headers: {
+                        'Content-Type': 'application/json; charset=utf-8',
+                        'Accept': '*/*'
+                    },
+                    data: JSON.stringify(duplicatedDBName),
+                    dataType: 'json',
+                    crossDomain: true,
+                }).then((res) => {
+                    uniqIDdb = Object.keys(res)[0];
+                    $.ajax(
+                        {
+                            method: 'POST',
+                            url: '/api/dashboards/update',
+                            data: JSON.stringify({
+                                "id": uniqIDdb,
+                                "name": duplicatedDBName,
+                                "details": {
+                                    "name": duplicatedDBName,
+                                    "description": duplicatedDescription,
+                                    "panels": duplicatedPanels,
+                                    "timeRange": duplicateTimeRange,
+                                    "refresh": duplicateRefresh,
+                                }
+                            })
+                        }
+                    )
+                }).then(function () {
+                    dbgridOptions.api.applyTransaction({
+                        add: [{
+                            dbname: duplicatedDBName,
+                            uniqId: uniqIDdb,
+                        }],
+                    });
+                })
+            })
+        }
+		function toggleFavorite() {
 			$.ajax({
-				method: 'get',
-				url: 'api/dashboards/' + params.data.uniqId,
+				method: 'put',
+				url: 'api/dashboards/favorite/' + params.data.uniqId,
 				headers: {
 					'Content-Type': 'application/json; charset=utf-8',
 					Accept: '*/*',
 				},
 				crossDomain: true,
-				dataType: 'json',
-			}).then(function (res) {
-				var queryString = "?id=" + params.data.uniqId;
-				window.location.href = "../dashboard.html" + queryString;
+			}).then((response) => {
+				// Update the favorite status based on the response
+				params.data.favorite = response.isFavorite;
+				if(params.data.favorite) {
+					this.starIcon.style.backgroundImage = starFilledURL;
+				} else {
+					this.starIcon.style.backgroundImage = starOutlineURL;
+				}							
 			});
 		}
+        function showPrompt() {
+            $('#delete-db-prompt').css('display', 'flex');
+            $('.popupOverlay, .popupContent').addClass('active');
+            $('#new-dashboard-modal').hide();
 
-		function deletedb() {
-			$.ajax({
-				method: 'get',
-				url: 'api/dashboards/delete/' + params.data.uniqId,
-				headers: {
-					'Content-Type': 'application/json; charset=utf-8',
-					Accept: '*/*',
-				},
-				crossDomain: true,
-			}).then(function () {
-				let deletedRowID = params.data.rowId;
-				dbgridOptions.api.applyTransaction({
-					remove: [{ rowId: deletedRowID }],
-				});
-			});
-		}
+            $('#cancel-db-prompt, .popupOverlay').click(function () {
+                $('.popupOverlay, .popupContent').removeClass('active');
+                $('#delete-db-prompt').hide();
+            });
 
-		function duplicatedb() {
-			$.ajax({
-				method: 'get',
-				url: 'api/dashboards/' + params.data.uniqId,
-				headers: {
-					'Content-Type': 'application/json; charset=utf-8',
-					Accept: '*/*',
-				},
-				crossDomain: true,
-				dataType: 'json',
-			}).then(function (res) {
-				let duplicatedDBName = res.name + "-Copy";
-				let duplicatedDescription = res.description;
-				let duplicatedPanels = res.panels;
-				let duplicateTimeRange = res.timeRange;
-				let duplicateRefresh = res.refresh;
-				let uniqIDdb;
-				$.ajax({
-					method: "post",
-					url: "api/dashboards/create",
-					headers: {
-						'Content-Type': 'application/json; charset=utf-8',
-						'Accept': '*/*'
-					},
-					data: JSON.stringify(duplicatedDBName),
-					dataType: 'json',
-					crossDomain: true,
-				}).then((res) => {
-					uniqIDdb = Object.keys(res)[0];
-					$.ajax(
-						{
-							method: 'POST',
-							url: '/api/dashboards/update',
-							data: JSON.stringify({
-								"id": uniqIDdb,
-								"name": duplicatedDBName,
-								"details": {
-									"name": duplicatedDBName,
-									"description": duplicatedDescription,
-									"panels": duplicatedPanels,
-									"timeRange": duplicateTimeRange,
-									"refresh": duplicateRefresh,
-								}
-							})
-						}
-					)
-				}).then(function () {
-					dbgridOptions.api.applyTransaction({
-						add: [{
-							dbname: duplicatedDBName,
-							uniqId: uniqIDdb,
-						}],
-					});
-				})
-			})
-		}
+            $('#delete-dbbtn').click(function () {
+                deletedb();
+                $('.popupOverlay, .popupContent').removeClass('active');
+                $('#delete-db-prompt').hide();
+            });
+        }
 
-		function showPrompt() {
-			$('#delete-db-prompt').css('display', 'flex');
-			$('.popupOverlay, .popupContent').addClass('active');
-			$('#new-dashboard-modal').hide();
+        this.vButton.addEventListener('click', view);
+        this.dButton.addEventListener('click', showPrompt);
+        this.duplicateButton.addEventListener('click', duplicatedb);
+        this.starIcon.addEventListener('click',toggleFavorite.bind(this));
+    }
 
-			$('#cancel-db-prompt, .popupOverlay').click(function () {
-				$('.popupOverlay, .popupContent').removeClass('active');
-				$('#delete-db-prompt').hide();
-			});
+    getGui() {
+        return this.eGui;
+    }
+    refresh(params) {
+        // Use the URL of the SVG files for star icons
+        const starOutlineURL = 'url("../assets/star-outline.svg")';
+        const starFilledURL = 'url("../assets/star-filled.svg")';
 
-			$('#delete-dbbtn').click(function () {
-				deletedb();
-				$('.popupOverlay, .popupContent').removeClass('active');
-				$('#delete-db-prompt').hide();
-			});
-		}
-
-		this.vButton.addEventListener('click', view);
-		this.dButton.addEventListener('click', showPrompt);
-		this.duplicateButton.addEventListener('click', duplicatedb);
-	}
-
-	getGui() {
-		return this.eGui;
-	}
-	refresh(params) {
-		return false;
-	}
+        this.starIcon.style.backgroundImage = params.data.favorite ? starFilledURL : starOutlineURL;
+        return false;
+    }
 }
 
 let dashboardColumnDefs = [
@@ -350,7 +424,7 @@ let dashboardColumnDefs = [
 	},
 	{
 		cellRenderer: btnRenderer,
-		width: 5,
+		width: 40,
 	},
 
 ];
@@ -360,7 +434,7 @@ const dbgridOptions = {
 	columnDefs: dashboardColumnDefs,
 	rowData: dbRowData,
 	animateRows: true,
-	rowHeight: 64,
+	rowHeight: 54,
 	defaultColDef: {
 		icons: {
 			sortAscending: '<i class="fa fa-sort-alpha-up"/>',
@@ -474,9 +548,9 @@ function showDBNotFoundMsg() {
 	$('#dashboard-grid-container').hide();
 	$('#empty-response').show();
 }
+let favoriteDBsSet;
 
 $(document).ready(async function () {
-	displayNavbar();
 	if (Cookies.get('theme')) {
 		theme = Cookies.get('theme');
 		$('body').attr('data-theme', theme);
@@ -486,6 +560,9 @@ $(document).ready(async function () {
 	let normalDBs = await getAllDashboards();
 	let allDefaultDBs = await getAllDefaultDashboards();
 	let allDBs = {...normalDBs, ...allDefaultDBs}
+	let favoriteDBs = await getAllFavoriteDashboards();
+	// Convert the array of favorite dashboards to a Set for faster lookup
+	favoriteDBsSet = new Set(Object.keys(favoriteDBs));
 	displayDashboards(allDBs)
 
 	$('#create-db-btn').click(createDashboard);

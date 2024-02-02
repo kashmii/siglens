@@ -69,12 +69,6 @@ function setupEventHandlers() {
     $('.ui-widget input').on('keyup', saveqInputHandler);
 
     $(window).bind('popstate', windowPopStateHandler);
-
-    // point, click, search
-    $(document).on('mouseup', selectedTextHandler);
-    $('body').on('click', '#replace-pcs-btn', replaceSearchQueryInputHandler);
-    $('body').on('click', '#append-pcs-btn', appendSearchQueryInputHandler);
-
 }
 
 
@@ -162,7 +156,7 @@ function customRangeHandler(evt){
 
     if(currentPanel) {
         if(currentPanel.queryData) {
-            if(currentPanel.chartType === "Line Chart" && currentPanel.queryType === "metrics") {
+            if(currentPanel.chartType === "Line Chart" || currentPanel.queryType === "metrics") {
                 currentPanel.queryData.start = filterStartDate.toString();
                 currentPanel.queryData.end = filterEndDate.toString();
             } else {
@@ -177,7 +171,7 @@ function customRangeHandler(evt){
             // if panel has some stored query data, reset it
             if(localPanels[panelIndex].queryData) {
                 delete localPanels[panelIndex].queryRes
-                if(localPanels[panelIndex].chartType === "Line Chart" && localPanels[panelIndex].queryType === "metrics") {
+                if(localPanels[panelIndex].chartType === "Line Chart" || localPanels[panelIndex].queryType === "metrics") {
                     localPanels[panelIndex].queryData.start = filterStartDate.toString();
                     localPanels[panelIndex].queryData.end = filterEndDate.toString();
                 } else {
@@ -191,7 +185,7 @@ function customRangeHandler(evt){
             localPanels.forEach(panel => {
                 delete panel.queryRes
                 if(panel.queryData) {
-                    if(panel.chartType === "Line Chart" && panel.queryType === "metrics") {
+                    if(panel.chartType === "Line Chart" || panel.queryType === "metrics") {
                         panel.queryData.start = filterStartDate.toString();
                         panel.queryData.end = filterEndDate.toString();
                     } else {
@@ -224,7 +218,7 @@ function dashboardRangeItemHandler(evt){
     // if user is on edit panel screen
     if(currentPanel) {
         if(currentPanel.queryData) {
-            if(currentPanel.chartType === "Line Chart" && currentPanel.queryType === "metrics") {
+            if(currentPanel.chartType === "Line Chart" || currentPanel.queryType === "metrics") {
                 currentPanel.queryData.start = filterStartDate.toString();
                 currentPanel.queryData.end = filterEndDate.toString();
             } else {
@@ -239,7 +233,7 @@ function dashboardRangeItemHandler(evt){
             // if panel has some stored query data, reset it
             if(localPanels[panelIndex].queryData) {
                 delete localPanels[panelIndex].queryRes
-                if(localPanels[panelIndex].chartType === "Line Chart" && localPanels[panelIndex].queryType === "metrics") {
+                if(localPanels[panelIndex].chartType === "Line Chart" || localPanels[panelIndex].queryType === "metrics") {
                     localPanels[panelIndex].queryData.start = filterStartDate.toString();
                     localPanels[panelIndex].queryData.end = filterEndDate.toString();
                 } else {
@@ -253,7 +247,7 @@ function dashboardRangeItemHandler(evt){
             localPanels.forEach(panel => {
                 delete panel.queryRes
                 if(panel.queryData) {
-                    if(panel.chartType === "Line Chart" && panel.queryType === "metrics") {
+                    if(panel.chartType === "Line Chart" || panel.queryType === "metrics") {
                         panel.queryData.start = filterStartDate.toString();
                         panel.queryData.end = filterEndDate.toString();
                     } else {
@@ -373,16 +367,7 @@ function runLiveTailBtnHandler(evt) {
   }
   $("#daterangepicker").hide();
 }
-/**
- * 
- * @returns true if the 2nd and 3rd box are all selected or all unselected
- */
-function SecondOrThirdBox(){
-    let num = 0;
-    if(secondBoxSet && secondBoxSet.size > 0) num++;
-    if (thirdBoxSet && thirdBoxSet.size > 0) num++;
-    return num != 1;
-}
+
 function runFilterBtnHandler(evt) {
     $('.popover').hide();
     evt.preventDefault();
@@ -395,10 +380,6 @@ function runFilterBtnHandler(evt) {
       logsRowData = [];
       wsState = "query";
       data = getSearchFilter(false, false);
-      if (!SecondOrThirdBox()) {
-        alert("Error");
-        return;
-      }
       availColNames = [];
       doSearch(data);
     } else {
@@ -419,10 +400,6 @@ function filterInputHandler(evt) {
       resetDashboard();
       logsRowData = [];
       data = getSearchFilter(false, false);
-      if (!SecondOrThirdBox()) {
-        alert("Error");
-        return;
-      }
       availColNames = [];
       doSearch(data);
     }

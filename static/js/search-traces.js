@@ -27,7 +27,6 @@ let pageNumber = 1,
 let limitation = -1;
 let hasLoaded = false;
 $(document).ready(() => {
-  displayNavbar();
   if (Cookies.get("theme")) {
     theme = Cookies.get("theme");
     $("body").attr("data-theme", theme);
@@ -49,7 +48,7 @@ function initPage(){
 }
 
 function getValuesOfColumn(chooseColumn, spanName) {
-  let searchText = "SELECT DISTINCT " + chooseColumn + " FROM `ind-0`";
+  let searchText = "SELECT DISTINCT " + chooseColumn + " FROM `traces`";
   let param = {
     state: "query",
     searchText: searchText,
@@ -94,7 +93,7 @@ function getValuesOfColumn(chooseColumn, spanName) {
 }
 function fetchData(chooseColumn) {
   return new Promise((resolve, reject) => {
-    let searchText = "SELECT DISTINCT " + chooseColumn + " FROM `ind-0`";
+    let searchText = "SELECT DISTINCT " + chooseColumn + " FROM `traces`";
     if (
       chooseColumn == "name" &&
       $("#service-span-name").text() &&
@@ -366,8 +365,18 @@ function showScatterPlot() {
       formatter: function (param) {
         var green = param.value[4];
         var red = param.value[5];
+        var duration = param.value[1];
+        var spans = param.value[2];
+        var errors = param.value[3];
+        var traceId = param.dataIndex < returnResTotal.length ? returnResTotal[param.dataIndex].trace_id.substring(0, 7) : '';
+
         return (
-          "<div>" + green + ": " + red + "</div>"
+          "<div>" + green + ": " + red + 
+          "<br>Duration: " + duration + "ms" +
+          "<br>No. of Spans: " + spans +
+          "<br>No. of Error Spans: " + errors +
+          "<br>Trace ID: " + traceId +
+          "</div>"
         );
       },
     },
@@ -380,10 +389,10 @@ function showScatterPlot() {
         },
         data: curSpanTraceArray,
         symbolSize: function (val) {
-          return val[2] == 1 ? 2 : val[2];
+          return val[2] < 5 ? 5 : val[2];
         },
         itemStyle: {
-          color: "rgba(1, 191, 179, 0.5)",
+          color: "rgba(99, 71, 217, 0.5)",
         },
       },
       {
@@ -394,7 +403,7 @@ function showScatterPlot() {
         },
         data: curErrorTraceArray,
         symbolSize: function (val) {
-          return val[3] == 1 ? 2 : val[3];
+          return val[3] < 5 ? 5 : val[3];
         },
         itemStyle: {
           color: "rgba(233, 49, 37, 0.5)",
@@ -406,7 +415,7 @@ function showScatterPlot() {
 function reSort(){
   $(".warn-box").remove();
   for (let i = 0; i < returnResTotal.length; i++) {
-    $("#warn-bottom").append(`<div class="warn-box"><div class="warn-head">
+    $("#warn-bottom").append(`<div class="warn-box warn-box-${i}"><div class="warn-head">
                             <div><span id="span-id-head-${i}"></span><span class="span-id-text" id="span-id-${i}"></span></div>
                             <span class = "duration-time" id  = "duration-time-${i}"></span>
                         </div>
@@ -422,6 +431,7 @@ function reSort(){
                             </div>
                         </div></div>`);
     let json = returnResTotal[i];
+    $(`.warn-box-${i}`).attr("id",json.trace_id );
     $(`#span-id-head-${i}`).text(json.service_name + ": " + json.operation_name + "  ");
     $(`#span-id-${i}`).text(json.trace_id.substring(0, 7));
     $(`#total-span-${i}`).text(
@@ -519,3 +529,8 @@ function getData() {
       }
       
 }
+
+$("body").on("click", ".warn-box", function() {
+  var traceId = $(this).attr("id");
+  window.location.href = "trace.html?trace_id=" + traceId;
+});

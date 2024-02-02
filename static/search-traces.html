@@ -48,19 +48,11 @@
     </div>
     <div id="app-container">
 
-        <div id="app-side-nav" class="active">
+        <div id="app-side-nav">
         </div>
         <div id="download-trace"></div>
         <div id="dashboard" class="p-20 pb-0">
             <div class="subsection-navbar">
-                <div>
-                    <h1 class="myOrg-heading">Tracing</h1>
-                    <div class="subsection-buttons">
-                        <div class="section-button"><a href="./service-health.html">Service Health</a></div>
-                        <div class="section-button active"><a href="./search-traces.html">Search Traces</a></div>
-                        <div class="section-button"><a href="./dependency-graph.html">Dependency Graph</a></div>
-                    </div>
-                </div>
             </div>
             <div class="page-block">
                 <div class="search">
@@ -77,7 +69,7 @@
                     </div>
                     <div class="input-box">
                         <span>Tags</span>
-                        <input class="form-control" id="tags-input" placeholder="" type="text">
+                        <input class="form-control" id="tags-input" placeholder="http.method=GET" type="text">
                     </div>
                     <div class="dropdown lookback" id="lookback">
                         <span>Lookback</span>
@@ -85,12 +77,12 @@
                     
                     <div class="duration">
                         <div class="input-box">
-                            <span>Max Duration</span>
-                            <input class="form-control" id="max-duration-input" placeholder="" type="text">
-                        </div>
-                        <div class="input-box tags-second">
                             <span>Min Duration</span>
                             <input class="form-control" id="min-duration-input" placeholder="" type="text">
+                        </div>
+                        <div class="input-box tags-second">
+                            <span>Max Duration</span>
+                            <input class="form-control" id="max-duration-input" placeholder="" type="text">
                         </div>
                     </div>
                     <div class="input-box">
@@ -140,6 +132,8 @@
     <script src="./component/download/download.js"></script>
     <script src="./component/time-picker/time-picker.js"></script>
     <script src="./js/lib/echarts.min.js"></script>
+    <script src="./component/upper-navbar/upper-navbar.js"></script>
+
 </body>
 
 </html>

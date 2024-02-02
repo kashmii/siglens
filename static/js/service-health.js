@@ -23,7 +23,6 @@ let redMetricsData ={
    
 }
 $(document).ready(() => {
-    displayNavbar();
     if (Cookies.get("theme")) {
         theme = Cookies.get("theme");
         $("body").attr("data-theme", theme);
@@ -48,7 +47,8 @@ const columnDefs=[
 const gridOptions = {
     rowData: serviceRowData ,
     onRowClicked: onRowClicked,
-    rowHeight: 50,
+    headerHeight:32,
+    rowHeight: 42,
     defaultColDef: {
     cellClass: 'align-center-grid',
       resizable: true,
@@ -114,11 +114,11 @@ function displayServiceHealthTable(res){
     $.each(res, function (key, value) {
         newRow.set("rowId", key);
         newRow.set("service", value.service);
-        newRow.set("rate", Number(value.rate).toFixed(2));
-        newRow.set("error", value.error_rate);
-        newRow.set("p50", value.p50);
-        newRow.set("p90", value.p90);
-        newRow.set("p99", value.p99);
+        newRow.set("rate", (Math.abs(value.rate) % 1 === 0 ? Math.abs(value.rate) : Number(value.rate).toFixed(2)).toLocaleString("en-US"));
+        newRow.set("error", (Math.abs(value.error_rate) % 1 === 0 ? Math.abs(value.error_rate) : Number(value.error_rate).toFixed(2)).toLocaleString("en-US"));
+        newRow.set("p50", value.p50.toLocaleString("en-US"));
+        newRow.set("p90", value.p90.toLocaleString("en-US"));
+        newRow.set("p99", value.p99.toLocaleString("en-US"));
 
         serviceRowData = _.concat(serviceRowData, Object.fromEntries(newRow));
     })
@@ -134,6 +134,5 @@ function onRowClicked(event) {
     const serviceName = event.data.service; 
     window.location.href = 'service-health-overview.html?service=' + encodeURIComponent(serviceName);
 }
-
 
 

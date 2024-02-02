@@ -1,12 +1,15 @@
 # Siglens Contributor Guide
 
-* [New Contributor Guide](#contributing-guide)
-  * [Ways to Contribute](#ways-to-contribute)
-  * [Find an Issue](#find-an-issue)
-  * [Ask for Help](#ask-for-help)
-  * [Pull Request Lifecycle](#pull-request-lifecycle)
-  * [Development Environment Setup](#development-environment-setup)
-  * [Pull Request Checklist](#pull-request-checklist)
+- [Siglens Contributor Guide](#siglens-contributor-guide)
+  - [Ways to Contribute](#ways-to-contribute)
+  - [Find an Issue](#find-an-issue)
+  - [Ask for Help](#ask-for-help)
+  - [Pull Request Lifecycle](#pull-request-lifecycle)
+  - [Development Environment Setup](#development-environment-setup)
+    - [Start up Siglens](#start-up-siglens)
+    - [Send Data to SigLens](#send-data-to-siglens)
+    - [Send Queries on Siglens](#send-queries-on-siglens)
+  - [Pull Request Checklist](#pull-request-checklist)
 
 Hello there! We are glad that you want to contribute to our project! 💖
 
@@ -84,21 +87,24 @@ Once golang is installed, start up SigLens by running the following command at t
 go run cmd/siglens/main.go --config server.yaml
 ```
 
-By default, the UI server will start up on port `80` and the backend will start on port `8081`.
+By default, the UI server will start up on port `5122` and the backend will start on port `8081`.
 
-You should be able to access `http://localhost:80` and see the SigLens UI. If you are not able to, check `siglens.log` for any error messages.
+You should be able to access `http://localhost:5122` and see the SigLens UI. If you are not able to, check `siglens.log` for any error messages.
 
 
 ### Send Data to SigLens
 
-To send data, clone the [sigscalr-client](https://github.com/sigscalr/sigscalr-client) repo.
 
-In another terminal, start the ingestion via `sigscalr-client` by running:
+In another terminal, go to the location of sigclient:
+```
+cd tools/sigclient
+```
+ start the ingestion via `sigscalr-client` by running:
 ```
 go run main.go ingest esbulk -t 10_000 -d http://localhost:8081/elastic --processCount 1 -n 1 -b 500 -g dynamic-user
 ```
 
-Look through the [sigscalr-client ReadMe](https://github.com/sigscalr/sigscalr-client/blob/main/README.md) to see all command arguments.
+Look through the [sigscalr-client ReadMe](tools/sigclient/README.md) to see all command arguments.
 
 
 ### Send Queries on Siglens
@@ -107,7 +113,7 @@ Using the UI, you should be able to send queries using our pipe search query lan
 
 The sigscalr-client also supports sending queries using:
 ```
-go run main.go query -d http://localhost:80/elastic -n 10 -v
+go run main.go query -d http://localhost:5122/elastic -n 10 -v
 ```
 
 

@@ -1,13 +1,21 @@
-# SigLens
+<p align="center">
+<img src="https://github.com/siglens/siglens/assets/604069/7dab105b-2102-4a32-85c7-02fbb4604217" width="300">
+</p>
+
+---
+[![Build Status](https://github.com/siglens/siglens/workflows/siglens-docker-release/badge.svg)](https://github.com/siglens/siglens/actions/workflows/publish-prod-images.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/siglens/siglens)](https://goreportcard.com/report/github.com/siglens/siglens)
+[![GoDoc](https://godoc.org/github.com/siglens/siglens?status.svg)](https://pkg.go.dev/github.com/siglens/siglens)
+[![codecov](https://codecov.io/gh/siglens/siglens/graph/badge.svg?token=MH8S9B0EIK)](https://codecov.io/gh/siglens/siglens)
 
 English | [简体中文](README_ZH_CN.md)
 
 <p align="center">
   
 
-  <p align="center">SigLens is an Open Source Observability solution that is 💥💥 <b>100x</b> 💥💥 more efficient than Splunk, Elastic.</p>
-  <p align="center">SigLens is a <b>single binary</b> solution for Logs 🎯, Metrics 🎯 and Traces 🎯.</p>
-  <p align="center">Reduce your observability bill by more than ⚡⚡ <b>90%</b> ⚡⚡ using SigLens.</p>
+  <p align="left">Open Source Observability that is 💥💥 <b>100x</b> 💥💥 more efficient than Splunk </p>
+  <p align="left"><b>Single binary</b> for Logs 🎯, Metrics 🎯 and Traces 🎯.</p>
+  <p align="left">Cut down your Splunk bill by ⚡ ⚡ <b>90%</b> ⚡ ⚡ </p>
 
 </p>
 
@@ -16,7 +24,7 @@ English | [简体中文](README_ZH_CN.md)
 # Why SigLens:
 Our experience servicing 10,000+ engineers with Observability tools taught us a few things:
 
-- Developers have to jump through different tools for logs, metrics, traces 🏃💦 
+- Developers have to jump through different tools for logs, metrics, traces
 - Splunk, DataDog, NewRelic are very expensive 💸 💸 💸 
 - ElasticSearch takes too many machines, cluster maintenance is hard 👩‍💻👩‍💻
 - Grafana Loki has slow query performance 🐌🐌
@@ -26,27 +34,27 @@ Armed with decades of experience in monitoring domain, we set out to build a obs
 <br /><br />
 
 
-## Join our Community
+# Setup
+## Installation
 
-Come say Hi to us on <a href="https://www.siglens.com/slack" target="_blank">Slack</a> 👋
+### &emsp; <a href="https://siglens.github.io/siglens-docs/installation/git" target="_blank">Git</a> &emsp; | &emsp; <a href="https://siglens.github.io/siglens-docs/installation/docker" target="_blank">Docker</a> &emsp;| &emsp; <a href="https://siglens.github.io/siglens-docs/installation/helm" target="_blank">Helm</a>
 
-<br />
-
-# Getting Started
-
-### Install Using Git Repo
-Please follow the steps listed <a href="https://siglens.github.io/siglens-docs/installation/git" target="_blank">here</a>.
+## Documentation
+### &emsp; <a href="https://siglens.github.io/siglens-docs" target="_blank">Docs</a> &emsp;
 
 
-### Install Using Binary
-Please follow the steps listed <a href="https://siglens.github.io/siglens-docs/installation/binary" target="_blank">here</a>.
+# Differentiators
+
+### SigLens v/s Splunk,Elastic,Loki  
+Check out this <a href="https://www.siglens.com/blog/petabyte-of-observability-data.html" target="_blank">blog</a> where SigLens ingested data at 1 PB/day rate for 24 hours on a mere `32 EC2 instances` compared to `3000 EC2 instances` required for Splunk, Elastic, Grafana Loki
+
+### SigLens v/s Elasticsearch 
+Check out this <a href="https://www.siglens.com/blog/siglens-1025x-faster-than-elasticsearch" target="_blank">blog</a> where SigLens is **`1025x`** Faster than Elasticsearch 🚀🚀
+
+### SigLens v/s ClickHouse 
+Check out this <a href="https://www.siglens.com/blog/siglens-54x-faster-than-clickhouse.html" target="_blank">blog</a> where SigLens is **`54x`** Faster than ClickHouse 🚀🚀
 
 
-### Install Using Docker
-Please follow the steps listed <a href="https://siglens.github.io/siglens-docs/installation/docker" target="_blank">here</a>.
-
-### Install Using Helm
-Please follow the steps listed <a href="https://siglens.github.io/siglens-docs/installation/helm" target="_blank">here</a>.
 <br />
 
 # Features:
@@ -55,23 +63,19 @@ Please follow the steps listed <a href="https://siglens.github.io/siglens-docs/i
 2. Multiple Query Languages: Splunk SPL, SQL and Loki LogQL
 3. Simple architecture, easy to get started.
 
-# Differentiators
 
-### SigLens v/s Splunk,Elastic,Loki  
-Check out this <a href="https://www.sigscalr.io/blog/petabyte-of-observability-data.html" target="_blank">blog</a> where SigLens ingested data at 1 PB/day rate for 24 hours on a mere `32 EC2 instances` compared to `3000 EC2 instances` required for Splunk, Elastic, Grafana Loki
+## Join our Community
 
-### SigLens v/s Elasticsearch 
-Check out this <a href="https://www.sigscalr.io/blog/sigscalr-vs-elasticsearch.html" target="_blank">blog</a> where SigLens is **`8x`** Faster than Elasticsearch 🚀🚀
+Have questions, ask them in our community <a href="https://www.siglens.com/slack" target="_blank">Slack</a> 👋
 
-### SigLens v/s ClickHouse 
-Check out this <a href="https://www.sigscalr.io/blog/sigscalr-vs-clickhouse.html" target="_blank">blog</a> where SigLens is **`4x-37x`** Faster than ClickHouse 🚀🚀
+<br />
 
 
 # Contributing
 
 Please read [CONTRIBUTING.md](CONTRIBUTING.md) to get started with making contributions to SigLens.
 
-# Usability
+# How-Tos
 
 #### Searching Logs
 ![Searching Logs](./static/assets/readme-assets/log-searching.png)
@@ -90,5 +94,4 @@ Please read [CONTRIBUTING.md](CONTRIBUTING.md) to get started with making contri
 
 
 ## Code of Conduct
-`TBD`
-
+Please review our [code of conduct](https://github.com/siglens/siglens?tab=coc-ov-file#siglens-code-of-conduct) before contributing.

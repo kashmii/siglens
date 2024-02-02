@@ -83,12 +83,9 @@ $(document).ready(function () {
         
     }
     $('.theme-btn').on('click', themePickerHandler);
-    displayNavbar();
-
     $('#new-contact-point').on('click',initializeContactForm)
     $('#contact-form-container').css('display', 'none');
     getAllContactPoints();
-
     if(window.location.href.includes("alert.html")){
         initializeContactForm();
     }
@@ -330,9 +327,22 @@ function deleteContactPrompt(data) {
     });
 }
 
-function showDeleteContactDialog(data){
+function showDeleteContactDialog(data,matchingAlertNames){
     $('#contact-name-placeholder-delete-dialog').html('<strong>' + data.contactName + '</strong>');
     $('.popupOverlay, .delete-dialog').addClass('active');
+    let el = $('#alert-listing');
+    el.html(``);
+    const maxHeight = 100;
+    matchingAlertNames.forEach(function (alertName) {
+        el.append(`<div class="alert-dropdown-item">${alertName}</div>`);
+    });
+
+    // Apply styling to make the dropdown scrollable
+el.css({
+    'max-height': `${maxHeight}px`,
+    'overflow-y': 'auto'
+});
+    $("body").css("cursor","default");
     $('#cancel-btn, .popupOverlay').click(function () {
         $('.popupOverlay, .delete-dialog').removeClass('active');
     });
@@ -357,12 +367,13 @@ function getAllAlertsWithSameContactPoint(data){
                 matchingAlertNames.push(alert.alert_name);
         }}}
           if(matchingAlertNames.length > 0){
-            showDeleteContactDialog(data);
+            showDeleteContactDialog(data,matchingAlertNames);
           }else{
             deleteContactPrompt(data);
           }
     })
 }
+
 
 let contactColumnDefs = [
     {
@@ -396,6 +407,7 @@ const contactGridOptions = {
 	rowData: contactRowData,
 	animateRows: true,
 	rowHeight: 44,
+    headerHeight:32,
 	defaultColDef: {
 		icons: {
 			sortAscending: '<i class="fa fa-sort-alpha-up"/>',

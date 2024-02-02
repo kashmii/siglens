@@ -18,7 +18,7 @@ package tests
 
 import (
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"os"
 	"regexp"
 	"testing"
@@ -71,8 +71,8 @@ func extractExpressionFilter(t *testing.T, node *ast.Node) *structs.ExpressionFi
 
 // Initial setup.
 func TestMain(m *testing.M) {
-	// Supress log output.
-	log.SetOutput(ioutil.Discard)
+	// Suppress log output.
+	log.SetOutput(io.Discard)
 
 	// Run the tests.
 	os.Exit(m.Run())
@@ -260,6 +260,40 @@ func Test_searchFieldGreaterThanOrEqualToQuotedString(t *testing.T) {
 	res, err := spl.Parse("", query)
 	assert.Nil(t, res)
 	assert.NotNil(t, err)
+}
+
+func Test_searchFieldEqualToBooleanTrue(t *testing.T) {
+	query := []byte(`search status=true`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+
+	assert.NotNil(t, filterNode)
+	assert.Equal(t, "=", filterNode.Comparison.Op)
+	assert.Equal(t, "status", filterNode.Comparison.Field)
+	assert.Equal(t, true, filterNode.Comparison.Values)
+
+	expressionFilter := extractExpressionFilter(t, filterNode)
+	assert.Equal(t, "status", expressionFilter.LeftInput.Expression.LeftInput.ColumnName)
+	assert.Equal(t, utils.Equals, expressionFilter.FilterOperator)
+	assert.Equal(t, uint8(1), expressionFilter.RightInput.Expression.LeftInput.ColumnValue.BoolVal)
+}
+
+func Test_searchFieldEqualToBooleanFalse(t *testing.T) {
+	query := []byte(`search status=false`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+
+	assert.NotNil(t, filterNode)
+	assert.Equal(t, "=", filterNode.Comparison.Op)
+	assert.Equal(t, "status", filterNode.Comparison.Field)
+	assert.Equal(t, false, filterNode.Comparison.Values)
+
+	expressionFilter := extractExpressionFilter(t, filterNode)
+	assert.Equal(t, "status", expressionFilter.LeftInput.Expression.LeftInput.ColumnName)
+	assert.Equal(t, utils.Equals, expressionFilter.FilterOperator)
+	assert.Equal(t, uint8(0), expressionFilter.RightInput.Expression.LeftInput.ColumnValue.BoolVal)
 }
 
 func Test_searchFieldEqualToUnquotedString(t *testing.T) {
@@ -1437,6 +1471,84 @@ func Test_manyChainedCompoundSearch(t *testing.T) {
 	assert.Equal(t, andFilter.FilterCriteria[0].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(6))
 }
 
+func Test_searchBlockWithoutUsingSearchKeyword(t *testing.T) {
+	// This should be equivalent to `search A=1 AND ((B=2 AND C=3) AND ((D=4 OR E=5) AND F=6))`
+	query := []byte(`search A=1 | B=2 C=3 | search D=4 OR E=5 | F=6`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+
+	assert.NotNil(t, filterNode)
+	assert.Equal(t, ast.NodeAnd, filterNode.NodeType)
+	assert.Equal(t, ast.NodeAnd, filterNode.Right.NodeType)
+	assert.Equal(t, ast.NodeAnd, filterNode.Right.Left.NodeType)
+	assert.Equal(t, ast.NodeAnd, filterNode.Right.Right.NodeType)
+	assert.Equal(t, ast.NodeOr, filterNode.Right.Right.Left.NodeType)
+
+	assert.Equal(t, filterNode.Left.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Left.Comparison.Field, "A")
+	assert.Equal(t, filterNode.Left.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Left.Comparison.Values, json.Number("1"))
+
+	assert.Equal(t, filterNode.Right.Left.Left.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Right.Left.Left.Comparison.Field, "B")
+	assert.Equal(t, filterNode.Right.Left.Left.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Right.Left.Left.Comparison.Values, json.Number("2"))
+
+	assert.Equal(t, filterNode.Right.Left.Right.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Right.Left.Right.Comparison.Field, "C")
+	assert.Equal(t, filterNode.Right.Left.Right.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Right.Left.Right.Comparison.Values, json.Number("3"))
+
+	assert.Equal(t, filterNode.Right.Right.Left.Left.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Right.Right.Left.Left.Comparison.Field, "D")
+	assert.Equal(t, filterNode.Right.Right.Left.Left.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Right.Right.Left.Left.Comparison.Values, json.Number("4"))
+
+	assert.Equal(t, filterNode.Right.Right.Left.Right.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Right.Right.Left.Right.Comparison.Field, "E")
+	assert.Equal(t, filterNode.Right.Right.Left.Right.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Right.Right.Left.Right.Comparison.Values, json.Number("5"))
+
+	assert.Equal(t, filterNode.Right.Right.Right.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Right.Right.Right.Comparison.Field, "F")
+	assert.Equal(t, filterNode.Right.Right.Right.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Right.Right.Right.Comparison.Values, json.Number("6"))
+
+	astNode := &structs.ASTNode{}
+	err = pipesearch.SearchQueryToASTnode(filterNode, astNode, 0)
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode.AndFilterCondition.FilterCriteria)
+	assert.Len(t, astNode.AndFilterCondition.FilterCriteria, 1)
+	andFilter := astNode.AndFilterCondition
+	assert.Equal(t, andFilter.FilterCriteria[0].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "A")
+	assert.Equal(t, andFilter.FilterCriteria[0].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, andFilter.FilterCriteria[0].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(1))
+
+	assert.Len(t, astNode.AndFilterCondition.NestedNodes, 1)
+	assert.Len(t, astNode.AndFilterCondition.NestedNodes[0].AndFilterCondition.NestedNodes, 2)
+	andFilter = astNode.AndFilterCondition.NestedNodes[0].AndFilterCondition.NestedNodes[0].AndFilterCondition
+	assert.Len(t, andFilter.FilterCriteria, 2)
+	assert.Equal(t, andFilter.FilterCriteria[0].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "B")
+	assert.Equal(t, andFilter.FilterCriteria[0].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, andFilter.FilterCriteria[0].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(2))
+	assert.Equal(t, andFilter.FilterCriteria[1].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "C")
+	assert.Equal(t, andFilter.FilterCriteria[1].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, andFilter.FilterCriteria[1].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(3))
+
+	andFilter = astNode.AndFilterCondition.NestedNodes[0].AndFilterCondition.NestedNodes[1].AndFilterCondition
+	assert.Len(t, andFilter.NestedNodes, 1)
+	assert.Equal(t, andFilter.NestedNodes[0].OrFilterCondition.FilterCriteria[0].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "D")
+	assert.Equal(t, andFilter.NestedNodes[0].OrFilterCondition.FilterCriteria[0].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, andFilter.NestedNodes[0].OrFilterCondition.FilterCriteria[0].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(4))
+	assert.Equal(t, andFilter.NestedNodes[0].OrFilterCondition.FilterCriteria[1].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "E")
+	assert.Equal(t, andFilter.NestedNodes[0].OrFilterCondition.FilterCriteria[1].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, andFilter.NestedNodes[0].OrFilterCondition.FilterCriteria[1].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(5))
+	assert.Equal(t, andFilter.FilterCriteria[0].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "F")
+	assert.Equal(t, andFilter.FilterCriteria[0].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, andFilter.FilterCriteria[0].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(6))
+}
+
 func Test_regexSingleColumnEquals(t *testing.T) {
 	query := []byte(`A=1 | regex B="^\d$"`)
 	res, err := spl.Parse("", query)
@@ -2029,6 +2141,263 @@ func Test_groupbyManyFields(t *testing.T) {
 	assert.Equal(t, aggregator.BucketLimit, segquery.MAX_GRP_BUCKS)
 }
 
+func Test_timechartHasGroupby(t *testing.T) {
+	query := []byte(`search A=1 | timechart span=1d avg(latency), sum(latitude) BY http_status limit=bottom2`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	assert.Equal(t, filterNode.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Comparison.Field, "A")
+	assert.Equal(t, filterNode.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Comparison.Values, json.Number("1"))
+
+	pipeCommands := res.(ast.QueryStruct).PipeCommands
+	assert.NotNil(t, pipeCommands)
+	assert.Equal(t, pipeCommands.PipeCommandType, structs.GroupByType)
+	assert.Len(t, pipeCommands.GroupByRequest.MeasureOperations, 2)
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[0].MeasureCol, "latency")
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[0].MeasureFunc, utils.Avg)
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[1].MeasureCol, "latitude")
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[1].MeasureFunc, utils.Sum)
+	assert.Len(t, pipeCommands.GroupByRequest.GroupByColumns, 1)
+	assert.Equal(t, pipeCommands.GroupByRequest.GroupByColumns[0], "timestamp")
+	assert.Equal(t, pipeCommands.BucketLimit, segquery.MAX_GRP_BUCKS)
+	// Timechart
+	assert.NotNil(t, pipeCommands.TimeHistogram)
+	assert.NotNil(t, pipeCommands.TimeHistogram.Timechart)
+	assert.Equal(t, uint64(86_400_000), pipeCommands.TimeHistogram.IntervalMillis)
+	assert.Equal(t, "http_status", pipeCommands.TimeHistogram.Timechart.ByField)
+	assert.NotNil(t, pipeCommands.TimeHistogram.Timechart.LimitExpr)
+	assert.False(t, pipeCommands.TimeHistogram.Timechart.LimitExpr.IsTop)
+	assert.Equal(t, 2, pipeCommands.TimeHistogram.Timechart.LimitExpr.Num)
+	assert.Equal(t, structs.LSMByFreq, int(pipeCommands.TimeHistogram.Timechart.LimitExpr.LimitScoreMode))
+
+	astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+
+	assert.Len(t, astNode.AndFilterCondition.FilterCriteria, 1)
+	assert.Equal(t, astNode.AndFilterCondition.FilterCriteria[0].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "A")
+	assert.Equal(t, astNode.AndFilterCondition.FilterCriteria[0].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, astNode.AndFilterCondition.FilterCriteria[0].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(1))
+
+	assert.Equal(t, aggregator.PipeCommandType, structs.GroupByType)
+	assert.Len(t, aggregator.GroupByRequest.MeasureOperations, 2)
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[0].MeasureCol, "latency")
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[0].MeasureFunc, utils.Avg)
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[1].MeasureCol, "latitude")
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[1].MeasureFunc, utils.Sum)
+	assert.Len(t, aggregator.GroupByRequest.GroupByColumns, 1)
+	assert.Equal(t, aggregator.GroupByRequest.GroupByColumns[0], "timestamp")
+	assert.Equal(t, aggregator.BucketLimit, segquery.MAX_GRP_BUCKS)
+	// Timechart
+	assert.NotNil(t, aggregator.TimeHistogram)
+	assert.NotNil(t, aggregator.TimeHistogram.Timechart)
+	assert.Equal(t, uint64(86_400_000), aggregator.TimeHistogram.IntervalMillis)
+	assert.Equal(t, "http_status", aggregator.TimeHistogram.Timechart.ByField)
+	assert.NotNil(t, aggregator.TimeHistogram.Timechart.LimitExpr)
+	assert.False(t, aggregator.TimeHistogram.Timechart.LimitExpr.IsTop)
+	assert.Equal(t, 2, aggregator.TimeHistogram.Timechart.LimitExpr.Num)
+	assert.Equal(t, structs.LSMByFreq, int(aggregator.TimeHistogram.Timechart.LimitExpr.LimitScoreMode))
+}
+
+func Test_timechartWithoutGroupby(t *testing.T) {
+	query := []byte(`search A=1 | timechart span=1hr min(latency), range(longitude)`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	assert.Equal(t, filterNode.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Comparison.Field, "A")
+	assert.Equal(t, filterNode.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Comparison.Values, json.Number("1"))
+
+	pipeCommands := res.(ast.QueryStruct).PipeCommands
+	assert.NotNil(t, pipeCommands)
+	assert.Equal(t, pipeCommands.PipeCommandType, structs.GroupByType)
+	assert.Len(t, pipeCommands.GroupByRequest.MeasureOperations, 2)
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[0].MeasureCol, "latency")
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[0].MeasureFunc, utils.Min)
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[1].MeasureCol, "longitude")
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[1].MeasureFunc, utils.Range)
+	assert.Len(t, pipeCommands.GroupByRequest.GroupByColumns, 1)
+	assert.Equal(t, pipeCommands.GroupByRequest.GroupByColumns[0], "timestamp")
+	assert.Equal(t, pipeCommands.BucketLimit, segquery.MAX_GRP_BUCKS)
+	// Timechart
+	assert.NotNil(t, pipeCommands.TimeHistogram)
+	assert.NotNil(t, pipeCommands.TimeHistogram.Timechart)
+	assert.Equal(t, uint64(3_600_000), pipeCommands.TimeHistogram.IntervalMillis)
+	assert.Equal(t, "", pipeCommands.TimeHistogram.Timechart.ByField)
+	assert.Nil(t, pipeCommands.TimeHistogram.Timechart.LimitExpr)
+
+	astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+
+	assert.Len(t, astNode.AndFilterCondition.FilterCriteria, 1)
+	assert.Equal(t, astNode.AndFilterCondition.FilterCriteria[0].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "A")
+	assert.Equal(t, astNode.AndFilterCondition.FilterCriteria[0].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, astNode.AndFilterCondition.FilterCriteria[0].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(1))
+
+	assert.Equal(t, aggregator.PipeCommandType, structs.GroupByType)
+	assert.Len(t, aggregator.GroupByRequest.MeasureOperations, 2)
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[0].MeasureCol, "latency")
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[0].MeasureFunc, utils.Min)
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[1].MeasureCol, "longitude")
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[1].MeasureFunc, utils.Range)
+	assert.Len(t, aggregator.GroupByRequest.GroupByColumns, 1)
+	assert.Equal(t, aggregator.GroupByRequest.GroupByColumns[0], "timestamp")
+	assert.Equal(t, aggregator.BucketLimit, segquery.MAX_GRP_BUCKS)
+	// Timechart
+	assert.NotNil(t, aggregator.TimeHistogram)
+	assert.NotNil(t, aggregator.TimeHistogram.Timechart)
+	assert.Equal(t, uint64(3_600_000), aggregator.TimeHistogram.IntervalMillis)
+	assert.Equal(t, "", aggregator.TimeHistogram.Timechart.ByField)
+	assert.Nil(t, aggregator.TimeHistogram.Timechart.LimitExpr)
+}
+
+func Test_timechartWithoutGroupBy(t *testing.T) {
+	query := []byte(`search A=1 | timechart span=1d avg(latency), sum(latitude) BY http_status`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	assert.Equal(t, filterNode.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Comparison.Field, "A")
+	assert.Equal(t, filterNode.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Comparison.Values, json.Number("1"))
+
+	pipeCommands := res.(ast.QueryStruct).PipeCommands
+	assert.NotNil(t, pipeCommands)
+	assert.Equal(t, pipeCommands.PipeCommandType, structs.GroupByType)
+	assert.Len(t, pipeCommands.GroupByRequest.MeasureOperations, 2)
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[0].MeasureCol, "latency")
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[0].MeasureFunc, utils.Avg)
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[1].MeasureCol, "latitude")
+	assert.Equal(t, pipeCommands.GroupByRequest.MeasureOperations[1].MeasureFunc, utils.Sum)
+	assert.Len(t, pipeCommands.GroupByRequest.GroupByColumns, 1)
+	assert.Equal(t, pipeCommands.GroupByRequest.GroupByColumns[0], "timestamp")
+	assert.Equal(t, pipeCommands.BucketLimit, segquery.MAX_GRP_BUCKS)
+	// Timechart
+	assert.NotNil(t, pipeCommands.TimeHistogram)
+	assert.NotNil(t, pipeCommands.TimeHistogram.Timechart)
+	assert.Equal(t, "http_status", pipeCommands.TimeHistogram.Timechart.ByField)
+
+	astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+
+	assert.Len(t, astNode.AndFilterCondition.FilterCriteria, 1)
+	assert.Equal(t, astNode.AndFilterCondition.FilterCriteria[0].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "A")
+	assert.Equal(t, astNode.AndFilterCondition.FilterCriteria[0].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, astNode.AndFilterCondition.FilterCriteria[0].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(1))
+
+	assert.Equal(t, aggregator.PipeCommandType, structs.GroupByType)
+	assert.Len(t, aggregator.GroupByRequest.MeasureOperations, 2)
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[0].MeasureCol, "latency")
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[0].MeasureFunc, utils.Avg)
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[1].MeasureCol, "latitude")
+	assert.Equal(t, aggregator.GroupByRequest.MeasureOperations[1].MeasureFunc, utils.Sum)
+	assert.Len(t, aggregator.GroupByRequest.GroupByColumns, 1)
+	assert.Equal(t, aggregator.GroupByRequest.GroupByColumns[0], "timestamp")
+	assert.Equal(t, aggregator.BucketLimit, segquery.MAX_GRP_BUCKS)
+	// Timechart
+	assert.NotNil(t, aggregator.TimeHistogram)
+	assert.NotNil(t, aggregator.TimeHistogram.Timechart)
+	assert.Equal(t, "http_status", pipeCommands.TimeHistogram.Timechart.ByField)
+}
+
+func Test_aggHasEvalFuncWithoutGroupBy(t *testing.T) {
+	query := []byte(`city=Boston | stats max(latitude), range(eval(latitude >= 0))`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	assert.Equal(t, ast.NodeTerminal, filterNode.NodeType)
+	assert.Equal(t, "city", filterNode.Comparison.Field)
+	assert.Equal(t, "=", filterNode.Comparison.Op)
+	assert.Equal(t, "\"Boston\"", filterNode.Comparison.Values)
+
+	pipeCommands := res.(ast.QueryStruct).PipeCommands
+	assert.NotNil(t, pipeCommands)
+	assert.Equal(t, pipeCommands.PipeCommandType, structs.MeasureAggsType)
+	assert.Len(t, pipeCommands.MeasureOperations, 2)
+	assert.Equal(t, "latitude", pipeCommands.MeasureOperations[0].MeasureCol)
+	assert.Equal(t, utils.Max, pipeCommands.MeasureOperations[0].MeasureFunc)
+
+	assert.Equal(t, "range(eval(latitude >= 0))", pipeCommands.MeasureOperations[1].StrEnc)
+	assert.Equal(t, utils.Range, pipeCommands.MeasureOperations[1].MeasureFunc)
+	assert.NotNil(t, pipeCommands.MeasureOperations[1].ValueColRequest)
+	assert.Equal(t, structs.VEMBooleanExpr, int(pipeCommands.MeasureOperations[1].ValueColRequest.ValueExprMode))
+	assert.NotNil(t, pipeCommands.MeasureOperations[1].ValueColRequest.BooleanExpr)
+	assert.NotNil(t, pipeCommands.MeasureOperations[1].ValueColRequest.BooleanExpr.LeftValue)
+	assert.NotNil(t, pipeCommands.MeasureOperations[1].ValueColRequest.BooleanExpr.RightValue)
+	assert.NotNil(t, pipeCommands.MeasureOperations[1].ValueColRequest.BooleanExpr.LeftValue.NumericExpr)
+	assert.NotNil(t, pipeCommands.MeasureOperations[1].ValueColRequest.BooleanExpr.RightValue.NumericExpr)
+	assert.Equal(t, "latitude", pipeCommands.MeasureOperations[1].ValueColRequest.BooleanExpr.LeftValue.NumericExpr.Value)
+	assert.Equal(t, "0", pipeCommands.MeasureOperations[1].ValueColRequest.BooleanExpr.RightValue.NumericExpr.Value)
+}
+
+func Test_aggHasEvalFuncWithGroupBy(t *testing.T) {
+	query := []byte(`* | stats count(eval(http_status >= 100)), values(eval(if(len(state) > 5, job_title, city))) BY state`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	assert.Equal(t, ast.NodeTerminal, filterNode.NodeType)
+	assert.Equal(t, "*", filterNode.Comparison.Field)
+	assert.Equal(t, "=", filterNode.Comparison.Op)
+	assert.Equal(t, "\"*\"", filterNode.Comparison.Values)
+
+	pipeCommands := res.(ast.QueryStruct).PipeCommands
+	assert.NotNil(t, pipeCommands)
+	assert.Equal(t, pipeCommands.PipeCommandType, structs.GroupByType)
+	assert.NotNil(t, pipeCommands.GroupByRequest)
+	assert.Len(t, pipeCommands.GroupByRequest.MeasureOperations, 2)
+
+	assert.Equal(t, "count(eval(http_status >= 100))", pipeCommands.GroupByRequest.MeasureOperations[0].StrEnc)
+	assert.Equal(t, utils.Count, pipeCommands.GroupByRequest.MeasureOperations[0].MeasureFunc)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[0].ValueColRequest)
+	assert.Equal(t, structs.VEMBooleanExpr, int(pipeCommands.GroupByRequest.MeasureOperations[0].ValueColRequest.ValueExprMode))
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[0].ValueColRequest.BooleanExpr)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[0].ValueColRequest.BooleanExpr.LeftValue)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[0].ValueColRequest.BooleanExpr.RightValue)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[0].ValueColRequest.BooleanExpr.LeftValue.NumericExpr)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[0].ValueColRequest.BooleanExpr.RightValue.NumericExpr)
+	assert.Equal(t, "http_status", pipeCommands.GroupByRequest.MeasureOperations[0].ValueColRequest.BooleanExpr.LeftValue.NumericExpr.Value)
+	assert.Equal(t, "100", pipeCommands.GroupByRequest.MeasureOperations[0].ValueColRequest.BooleanExpr.RightValue.NumericExpr.Value)
+
+	assert.Equal(t, "values(eval(if(len(state) > 5, job_title, city)))", pipeCommands.GroupByRequest.MeasureOperations[1].StrEnc)
+	assert.Equal(t, utils.Values, pipeCommands.GroupByRequest.MeasureOperations[1].MeasureFunc)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest)
+	assert.Equal(t, structs.VEMConditionExpr, int(pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ValueExprMode))
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.BoolExpr)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.BoolExpr.LeftValue)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.BoolExpr.RightValue)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.BoolExpr.LeftValue.NumericExpr)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.BoolExpr.RightValue.NumericExpr)
+	assert.Equal(t, "len", pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.BoolExpr.LeftValue.NumericExpr.Op)
+	assert.Equal(t, "state", pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.BoolExpr.LeftValue.NumericExpr.Left.Value)
+	assert.Equal(t, "5", pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.BoolExpr.RightValue.NumericExpr.Value)
+
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.TrueValue)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.FalseValue)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.TrueValue.NumericExpr)
+	assert.NotNil(t, pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.FalseValue.NumericExpr)
+	assert.Equal(t, "job_title", pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.TrueValue.NumericExpr.Value)
+	assert.Equal(t, "city", pipeCommands.GroupByRequest.MeasureOperations[1].ValueColRequest.ConditionExpr.FalseValue.NumericExpr.Value)
+}
+
 func Test_groupbyFieldWithWildcard(t *testing.T) {
 	query := []byte(`search A=1 | stats avg(latency) BY http*`)
 	_, err := spl.Parse("", query)
@@ -2550,12 +2919,12 @@ func Test_statisticBlockWithoutStatsGroupBy(t *testing.T) {
 	assert.Equal(t, structs.SFMRare, int(aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticFunctionMode))
 
 	assert.Equal(t, "3", aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.Limit)
-	assert.Equal(t, "gender", aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.CountField)
-	assert.Equal(t, "testOther", aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.OtherStr)
-	assert.Equal(t, "http_method", aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.PercentField)
-	assert.Equal(t, true, aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.ShowCount)
-	assert.Equal(t, false, aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.ShowPerc)
-	assert.Equal(t, true, aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.UseOther)
+	assert.Equal(t, "gender", aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.CountField)
+	assert.Equal(t, "testOther", aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.OtherStr)
+	assert.Equal(t, "http_method", aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.PercentField)
+	assert.Equal(t, true, aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.ShowCount)
+	assert.Equal(t, false, aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.ShowPerc)
+	assert.Equal(t, true, aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.UseOther)
 
 	assert.Equal(t, []string{"http_method", "gender"}, aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.FieldList)
 	assert.Equal(t, []string{"country", "http_status"}, aggregator.Next.OutputTransforms.LetColumns.StatisticColRequest.ByClause)
@@ -2588,12 +2957,12 @@ func Test_statisticBlockWithStatsGroupBy(t *testing.T) {
 	assert.NotNil(t, aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest)
 	assert.Equal(t, structs.SFMTop, int(aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticFunctionMode))
 	assert.Equal(t, "2", aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.Limit)
-	assert.Equal(t, "true", aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.CountField)
-	assert.Equal(t, "other", aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.OtherStr)
-	assert.Equal(t, "weekday", aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.PercentField)
-	assert.Equal(t, true, aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.ShowCount)
-	assert.Equal(t, true, aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.ShowPerc)
-	assert.Equal(t, true, aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.Options.UseOther)
+	assert.Equal(t, "true", aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.CountField)
+	assert.Equal(t, "other", aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.OtherStr)
+	assert.Equal(t, "weekday", aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.PercentField)
+	assert.Equal(t, true, aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.ShowCount)
+	assert.Equal(t, true, aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.ShowPerc)
+	assert.Equal(t, true, aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.StatisticOptions.UseOther)
 
 	assert.Equal(t, []string{"gg", "state", "http_status"}, aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.FieldList)
 	assert.Equal(t, []string(nil), aggregator.Next.Next.Next.OutputTransforms.LetColumns.StatisticColRequest.ByClause)
@@ -3817,6 +4186,85 @@ func Test_evalWithMultipleElements(t *testing.T) {
 	assert.Equal(t, aggregator.Next.Next.Next.OutputTransforms.LetColumns.ValueColRequest.StringExpr.ConcatExpr.Atoms[1].Value, "Max")
 }
 
+func Test_evalWithMultipleSpaces(t *testing.T) {
+	query := []byte(`search      A    =   1  |   stats   max(  latency  )   AS   Max | eval Max  =  Max   .  " seconds", Max="Max Latency: " . Max`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+	assert.NotNil(t, aggregator.Next)
+
+	// Second agg is for renaming max(latency) to Max, the third is for the first statement in eval.
+	assert.NotNil(t, aggregator.Next.Next)
+	assert.Equal(t, aggregator.Next.Next.PipeCommandType, structs.OutputTransformType)
+	assert.NotNil(t, aggregator.Next.Next.OutputTransforms.LetColumns)
+	assert.Equal(t, aggregator.Next.Next.OutputTransforms.LetColumns.NewColName, "Max")
+	assert.Len(t, aggregator.Next.Next.OutputTransforms.LetColumns.ValueColRequest.StringExpr.ConcatExpr.Atoms, 2)
+	assert.Equal(t, aggregator.Next.Next.OutputTransforms.LetColumns.ValueColRequest.StringExpr.ConcatExpr.Atoms[0].IsField, true)
+	assert.Equal(t, aggregator.Next.Next.OutputTransforms.LetColumns.ValueColRequest.StringExpr.ConcatExpr.Atoms[0].Value, "Max")
+	assert.Equal(t, aggregator.Next.Next.OutputTransforms.LetColumns.ValueColRequest.StringExpr.ConcatExpr.Atoms[1].IsField, false)
+	assert.Equal(t, aggregator.Next.Next.OutputTransforms.LetColumns.ValueColRequest.StringExpr.ConcatExpr.Atoms[1].Value, " seconds")
+
+	// The fourth agg is for the second statement in eval.
+	assert.NotNil(t, aggregator.Next.Next.Next)
+	assert.Equal(t, aggregator.Next.Next.Next.PipeCommandType, structs.OutputTransformType)
+	assert.NotNil(t, aggregator.Next.Next.Next.OutputTransforms.LetColumns)
+	assert.Equal(t, aggregator.Next.Next.Next.OutputTransforms.LetColumns.NewColName, "Max")
+	assert.Len(t, aggregator.Next.Next.Next.OutputTransforms.LetColumns.ValueColRequest.StringExpr.ConcatExpr.Atoms, 2)
+	assert.Equal(t, aggregator.Next.Next.Next.OutputTransforms.LetColumns.ValueColRequest.StringExpr.ConcatExpr.Atoms[0].IsField, false)
+	assert.Equal(t, aggregator.Next.Next.Next.OutputTransforms.LetColumns.ValueColRequest.StringExpr.ConcatExpr.Atoms[0].Value, "Max Latency: ")
+	assert.Equal(t, aggregator.Next.Next.Next.OutputTransforms.LetColumns.ValueColRequest.StringExpr.ConcatExpr.Atoms[1].IsField, true)
+	assert.Equal(t, aggregator.Next.Next.Next.OutputTransforms.LetColumns.ValueColRequest.StringExpr.ConcatExpr.Atoms[1].Value, "Max")
+}
+
+func Test_evalWithMultipleSpaces2(t *testing.T) {
+	query := []byte(`search   A   =   1   OR  ( B =  2  AND   C =  3)`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+
+	assert.NotNil(t, filterNode)
+	assert.Equal(t, filterNode.NodeType, ast.NodeOr)
+	assert.Equal(t, filterNode.Right.NodeType, ast.NodeAnd)
+
+	assert.Equal(t, filterNode.Left.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Left.Comparison.Field, "A")
+	assert.Equal(t, filterNode.Left.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Left.Comparison.Values, json.Number("1"))
+
+	assert.Equal(t, filterNode.Right.Left.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Right.Left.Comparison.Field, "B")
+	assert.Equal(t, filterNode.Right.Left.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Right.Left.Comparison.Values, json.Number("2"))
+
+	assert.Equal(t, filterNode.Right.Right.NodeType, ast.NodeTerminal)
+	assert.Equal(t, filterNode.Right.Right.Comparison.Field, "C")
+	assert.Equal(t, filterNode.Right.Right.Comparison.Op, "=")
+	assert.Equal(t, filterNode.Right.Right.Comparison.Values, json.Number("3"))
+
+	astNode := &structs.ASTNode{}
+	err = pipesearch.SearchQueryToASTnode(filterNode, astNode, 0)
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode.OrFilterCondition.FilterCriteria)
+	assert.Len(t, astNode.OrFilterCondition.FilterCriteria, 1)
+	assert.Equal(t, astNode.OrFilterCondition.FilterCriteria[0].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "A")
+	assert.Equal(t, astNode.OrFilterCondition.FilterCriteria[0].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, astNode.OrFilterCondition.FilterCriteria[0].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(1))
+	assert.Len(t, astNode.OrFilterCondition.NestedNodes, 1)
+	assert.Len(t, astNode.OrFilterCondition.NestedNodes[0].AndFilterCondition.FilterCriteria, 2)
+	assert.Equal(t, astNode.OrFilterCondition.NestedNodes[0].AndFilterCondition.FilterCriteria[0].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "B")
+	assert.Equal(t, astNode.OrFilterCondition.NestedNodes[0].AndFilterCondition.FilterCriteria[0].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, astNode.OrFilterCondition.NestedNodes[0].AndFilterCondition.FilterCriteria[0].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(2))
+	assert.Equal(t, astNode.OrFilterCondition.NestedNodes[0].AndFilterCondition.FilterCriteria[1].ExpressionFilter.LeftInput.Expression.LeftInput.ColumnName, "C")
+	assert.Equal(t, astNode.OrFilterCondition.NestedNodes[0].AndFilterCondition.FilterCriteria[1].ExpressionFilter.FilterOperator, utils.Equals)
+	assert.Equal(t, astNode.OrFilterCondition.NestedNodes[0].AndFilterCondition.FilterCriteria[1].ExpressionFilter.RightInput.Expression.LeftInput.ColumnValue.UnsignedVal, uint64(3))
+}
+
 func Test_SimpleNumericEval(t *testing.T) {
 	query := []byte(`search A=1 | stats count AS Count | eval Thousands=Count / 1000`)
 	res, err := spl.Parse("", query)
@@ -4321,4 +4769,1047 @@ func Test_headWithLimitKeyword(t *testing.T) {
 
 	assert.Equal(t, aggregator.PipeCommandType, structs.OutputTransformType)
 	assert.Equal(t, aggregator.OutputTransforms.MaxRows, uint64(15))
+}
+
+func Test_dedupOneField(t *testing.T) {
+	query := []byte(`A=1 | dedup state`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+	assert.Nil(t, aggregator.Next)
+
+	assert.Equal(t, aggregator.PipeCommandType, structs.OutputTransformType)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns.DedupColRequest)
+
+	dedupExpr := aggregator.OutputTransforms.LetColumns.DedupColRequest
+	assert.Equal(t, dedupExpr.Limit, uint64(1))
+	assert.Equal(t, dedupExpr.FieldList, []string{"state"})
+	assert.NotNil(t, dedupExpr.DedupOptions)
+	assert.Equal(t, dedupExpr.DedupOptions.Consecutive, false)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEmpty, false)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEvents, false)
+	assert.Len(t, dedupExpr.DedupSortEles, 0)
+}
+
+func Test_dedupMultipleFields(t *testing.T) {
+	query := []byte(`A=1 | dedup state weekday http_status`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+	assert.Nil(t, aggregator.Next)
+
+	assert.Equal(t, aggregator.PipeCommandType, structs.OutputTransformType)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns.DedupColRequest)
+
+	dedupExpr := aggregator.OutputTransforms.LetColumns.DedupColRequest
+	assert.Equal(t, dedupExpr.Limit, uint64(1))
+	assert.Equal(t, dedupExpr.FieldList, []string{"state", "weekday", "http_status"})
+	assert.NotNil(t, dedupExpr.DedupOptions)
+	assert.Equal(t, dedupExpr.DedupOptions.Consecutive, false)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEmpty, false)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEvents, false)
+	assert.Len(t, dedupExpr.DedupSortEles, 0)
+}
+
+func Test_dedupWithLimit(t *testing.T) {
+	query := []byte(`A=1 | dedup 4 state weekday http_status`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+	assert.Nil(t, aggregator.Next)
+
+	assert.Equal(t, aggregator.PipeCommandType, structs.OutputTransformType)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns.DedupColRequest)
+
+	dedupExpr := aggregator.OutputTransforms.LetColumns.DedupColRequest
+	assert.Equal(t, dedupExpr.Limit, uint64(4))
+	assert.Equal(t, dedupExpr.FieldList, []string{"state", "weekday", "http_status"})
+	assert.NotNil(t, dedupExpr.DedupOptions)
+	assert.Equal(t, dedupExpr.DedupOptions.Consecutive, false)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEmpty, false)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEvents, false)
+	assert.Len(t, dedupExpr.DedupSortEles, 0)
+}
+
+func Test_dedupWithOptionsBeforeFieldList(t *testing.T) {
+	query := []byte(`A=1 | dedup keepevents=true keepempty=false consecutive=true state weekday http_status `)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+	assert.Nil(t, aggregator.Next)
+
+	assert.Equal(t, aggregator.PipeCommandType, structs.OutputTransformType)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns.DedupColRequest)
+
+	dedupExpr := aggregator.OutputTransforms.LetColumns.DedupColRequest
+	assert.Equal(t, dedupExpr.Limit, uint64(1))
+	assert.Equal(t, dedupExpr.FieldList, []string{"state", "weekday", "http_status"})
+	assert.NotNil(t, dedupExpr.DedupOptions)
+	assert.Equal(t, dedupExpr.DedupOptions.Consecutive, true)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEmpty, false)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEvents, true)
+	assert.Len(t, dedupExpr.DedupSortEles, 0)
+}
+
+func Test_dedupWithOptionsAfterFieldList(t *testing.T) {
+	query := []byte(`A=1 | dedup state weekday http_status keepevents=true keepempty=true consecutive=false`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+	assert.Nil(t, aggregator.Next)
+
+	assert.Equal(t, aggregator.PipeCommandType, structs.OutputTransformType)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns.DedupColRequest)
+
+	dedupExpr := aggregator.OutputTransforms.LetColumns.DedupColRequest
+	assert.Equal(t, dedupExpr.Limit, uint64(1))
+	assert.Equal(t, dedupExpr.FieldList, []string{"state", "weekday", "http_status"})
+	assert.NotNil(t, dedupExpr.DedupOptions)
+	assert.Equal(t, dedupExpr.DedupOptions.Consecutive, false)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEmpty, true)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEvents, true)
+	assert.Len(t, dedupExpr.DedupSortEles, 0)
+}
+
+func Test_dedupWithSortBy(t *testing.T) {
+	query := []byte(`A=1 | dedup state weekday http_status sortby +weekday -state`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+	assert.Nil(t, aggregator.Next)
+
+	assert.Equal(t, aggregator.PipeCommandType, structs.OutputTransformType)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns)
+	assert.NotNil(t, aggregator.OutputTransforms.LetColumns.DedupColRequest)
+
+	dedupExpr := aggregator.OutputTransforms.LetColumns.DedupColRequest
+	assert.Equal(t, dedupExpr.Limit, uint64(1))
+	assert.Equal(t, dedupExpr.FieldList, []string{"state", "weekday", "http_status"})
+	assert.NotNil(t, dedupExpr.DedupOptions)
+	assert.Equal(t, dedupExpr.DedupOptions.Consecutive, false)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEmpty, false)
+	assert.Equal(t, dedupExpr.DedupOptions.KeepEvents, false)
+	assert.Len(t, dedupExpr.DedupSortEles, 2)
+	assert.Equal(t, dedupExpr.DedupSortEles[0].SortByAsc, true)
+	assert.Equal(t, dedupExpr.DedupSortEles[0].Op, "")
+	assert.Equal(t, dedupExpr.DedupSortEles[0].Field, "weekday")
+	assert.Equal(t, dedupExpr.DedupSortEles[1].SortByAsc, false)
+	assert.Equal(t, dedupExpr.DedupSortEles[1].Op, "")
+	assert.Equal(t, dedupExpr.DedupSortEles[1].Field, "state")
+}
+
+// SPL Transaction command.
+func Test_TransactionRequestWithFields(t *testing.T) {
+	query := []byte(`A=1 | transaction A`)
+	res, err := spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode := res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+	assert.NotNil(t, aggregator.TransactionArguments)
+
+	transactionRequest := aggregator.TransactionArguments
+	assert.Equal(t, aggregator.PipeCommandType, structs.TransactionType)
+	assert.Equal(t, transactionRequest.Fields, []string{"A"})
+
+	query = []byte(`A=1 | transaction A B C`)
+	res, err = spl.Parse("", query)
+	assert.Nil(t, err)
+	filterNode = res.(ast.QueryStruct).SearchFilter
+	assert.NotNil(t, filterNode)
+
+	astNode, aggregator, err = pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+	assert.Nil(t, err)
+	assert.NotNil(t, astNode)
+	assert.NotNil(t, aggregator)
+	assert.NotNil(t, aggregator.TransactionArguments)
+
+	transactionRequest = aggregator.TransactionArguments
+	assert.Equal(t, aggregator.PipeCommandType, structs.TransactionType)
+	assert.Equal(t, transactionRequest.Fields, []string{"A", "B", "C"})
+}
+
+func Test_TransactionRequestWithStartsAndEndsWith(t *testing.T) {
+	query1 := []byte(`A=1 | transaction A B C startswith="foo" endswith="bar"`)
+	query1Res := &structs.TransactionArguments{
+		Fields:     []string{"A", "B", "C"},
+		StartsWith: &structs.FilterStringExpr{StringValue: "foo"},
+		EndsWith:   &structs.FilterStringExpr{StringValue: "bar"},
+	}
+
+	query2 := []byte(`A=1 | transaction endswith="bar" startswith="foo"`)
+	query2Res := &structs.TransactionArguments{
+		Fields:     []string(nil),
+		StartsWith: &structs.FilterStringExpr{StringValue: "foo"},
+		EndsWith:   &structs.FilterStringExpr{StringValue: "bar"},
+	}
+
+	query3 := []byte(`A=1 | transaction startswith="foo" endswith="bar"`)
+	query3Res := &structs.TransactionArguments{
+		Fields:     []string(nil),
+		StartsWith: &structs.FilterStringExpr{StringValue: "foo"},
+		EndsWith:   &structs.FilterStringExpr{StringValue: "bar"},
+	}
+
+	query4 := []byte(`A=1 | transaction endswith="bar"`)
+	query4Res := &structs.TransactionArguments{
+		Fields:     []string(nil),
+		StartsWith: nil,
+		EndsWith:   &structs.FilterStringExpr{StringValue: "bar"},
+	}
+
+	query5 := []byte(`A=1 | transaction startswith="foo"`)
+	query5Res := &structs.TransactionArguments{
+		Fields:     []string(nil),
+		StartsWith: &structs.FilterStringExpr{StringValue: "foo"},
+		EndsWith:   nil,
+	}
+
+	query6 := []byte(`A=1 | transaction startswith="foo" endswith="bar" A B C`)
+	query6Res := &structs.TransactionArguments{
+		Fields:     []string{"A", "B", "C"},
+		StartsWith: &structs.FilterStringExpr{StringValue: "foo"},
+		EndsWith:   &structs.FilterStringExpr{StringValue: "bar"},
+	}
+
+	queries := [][]byte{query1, query2, query3, query4, query5, query6}
+	results := []*structs.TransactionArguments{query1Res, query2Res, query3Res, query4Res, query5Res, query6Res}
+
+	for ind, query := range queries {
+		res, err := spl.Parse("", query)
+		assert.Nil(t, err)
+		filterNode := res.(ast.QueryStruct).SearchFilter
+		assert.NotNil(t, filterNode)
+
+		astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+		assert.Nil(t, err)
+		assert.NotNil(t, astNode)
+		assert.NotNil(t, aggregator)
+		assert.NotNil(t, aggregator.TransactionArguments)
+
+		transactionRequest := aggregator.TransactionArguments
+		assert.Equal(t, aggregator.PipeCommandType, structs.TransactionType)
+		assert.Equal(t, transactionRequest.Fields, results[ind].Fields)
+		assert.Equal(t, transactionRequest.StartsWith, results[ind].StartsWith)
+		assert.Equal(t, transactionRequest.EndsWith, results[ind].EndsWith)
+	}
+}
+
+func Test_TransactionRequestWithFilterStringExpr(t *testing.T) {
+	// CASE 1: Fields + StartsWith is Eval + EndsWith is TransactionQueryString With only OR
+	query1 := []byte(`A=1 | transaction A B C startswith=eval(duration > 10) endswith=("foo" OR "bar2")`)
+	query1Res := &structs.TransactionArguments{
+		Fields: []string{"A", "B", "C"},
+		StartsWith: &structs.FilterStringExpr{
+			EvalBoolExpr: &structs.BoolExpr{
+				IsTerminal: true,
+				LeftValue: &structs.ValueExpr{
+					NumericExpr: &structs.NumericExpr{
+						IsTerminal:      true,
+						NumericExprMode: structs.NEMNumberField,
+						ValueIsField:    true,
+						Value:           "duration",
+					},
+				},
+				RightValue: &structs.ValueExpr{
+					NumericExpr: &structs.NumericExpr{
+						IsTerminal:      true,
+						NumericExprMode: structs.NEMNumber,
+						ValueIsField:    false,
+						Value:           "10",
+					},
+				},
+				ValueOp: ">",
+			},
+		},
+		EndsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				OrFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							MatchFilter: &structs.MatchFilter{
+								MatchColumn: "*",
+								MatchWords: [][]byte{
+									[]byte("foo"),
+								},
+								MatchOperator: utils.And,
+								MatchPhrase:   []byte("foo"),
+								MatchType:     structs.MATCH_PHRASE,
+							},
+						},
+						{
+							MatchFilter: &structs.MatchFilter{
+								MatchColumn: "*",
+								MatchWords: [][]byte{
+									[]byte("bar2"),
+								},
+								MatchOperator: utils.And,
+								MatchPhrase:   []byte("bar2"),
+								MatchType:     structs.MATCH_PHRASE,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// CASE 2: Fields + StartsWith is searchTerm (String) + EndsWith is TransactionQueryString With OR & AND
+	query2 := []byte(`A=1 | transaction A B C startswith=status="ok" endswith=("foo" OR "foo1" AND "bar")`)
+	query2Res := &structs.TransactionArguments{
+		Fields: []string{"A", "B", "C"},
+		StartsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				AndFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							ExpressionFilter: &structs.ExpressionFilter{
+								LeftInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: nil,
+											ColumnName:  "status",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								FilterOperator: utils.Equals,
+								RightInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: &utils.DtypeEnclosure{
+												Dtype:     utils.SS_DT_STRING,
+												StringVal: "ok",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		EndsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				AndFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							MatchFilter: &structs.MatchFilter{
+								MatchColumn: "*",
+								MatchWords: [][]byte{
+									[]byte("bar"),
+								},
+								MatchOperator: utils.And,
+								MatchPhrase:   []byte("bar"),
+								MatchType:     structs.MATCH_PHRASE,
+							},
+						},
+					},
+					NestedNodes: []*structs.ASTNode{
+						{
+							OrFilterCondition: &structs.Condition{
+								FilterCriteria: []*structs.FilterCriteria{
+									{
+										MatchFilter: &structs.MatchFilter{
+											MatchColumn: "*",
+											MatchWords: [][]byte{
+												[]byte("foo"),
+											},
+											MatchOperator: utils.And,
+											MatchPhrase:   []byte("foo"),
+											MatchType:     structs.MATCH_PHRASE,
+										},
+									},
+									{
+										MatchFilter: &structs.MatchFilter{
+											MatchColumn: "*",
+											MatchWords: [][]byte{
+												[]byte("foo1"),
+											},
+											MatchOperator: utils.And,
+											MatchPhrase:   []byte("foo1"),
+											MatchType:     structs.MATCH_PHRASE,
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// CASE 3: Fields + StartWith is searchTerm (Number) + endswith is Eval
+	query3 := []byte(`A=1 | transaction A B C startswith=duration>10 endswith=eval(status<400)`)
+	query3Res := &structs.TransactionArguments{
+		Fields: []string{"A", "B", "C"},
+		StartsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				AndFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							ExpressionFilter: &structs.ExpressionFilter{
+								LeftInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: nil,
+											ColumnName:  "duration",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								FilterOperator: utils.GreaterThan,
+								RightInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: &utils.DtypeEnclosure{
+												Dtype:       utils.SS_DT_UNSIGNED_NUM,
+												UnsignedVal: uint64(10),
+												SignedVal:   int64(10),
+												FloatVal:    float64(10),
+												StringVal:   "10",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		EndsWith: &structs.FilterStringExpr{
+			EvalBoolExpr: &structs.BoolExpr{
+				IsTerminal: true,
+				LeftValue: &structs.ValueExpr{
+					NumericExpr: &structs.NumericExpr{
+						IsTerminal:      true,
+						NumericExprMode: structs.NEMNumberField,
+						ValueIsField:    true,
+						Value:           "status",
+					},
+				},
+				RightValue: &structs.ValueExpr{
+					NumericExpr: &structs.NumericExpr{
+						IsTerminal:      true,
+						NumericExprMode: structs.NEMNumber,
+						ValueIsField:    false,
+						Value:           "400",
+					},
+				},
+				ValueOp: "<",
+			},
+		},
+	}
+
+	// CASE 4: Fields + StartWith is searchTerm (String) + endswith is String Value
+	query4 := []byte(`A=1 | transaction A B C startswith=status="Ok" endswith="foo"`)
+	query4Res := &structs.TransactionArguments{
+		Fields: []string{"A", "B", "C"},
+		StartsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				AndFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							ExpressionFilter: &structs.ExpressionFilter{
+								LeftInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: nil,
+											ColumnName:  "status",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								FilterOperator: utils.Equals,
+								RightInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: &utils.DtypeEnclosure{
+												Dtype:     utils.SS_DT_STRING,
+												StringVal: "Ok",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		EndsWith: &structs.FilterStringExpr{
+			StringValue: "foo",
+		},
+	}
+
+	// CASE 5: Fields + StartWith is String Search Expression + endswith is String Value
+	query5 := []byte(`A=1 | transaction A B C startswith="status=300 OR status=bar" endswith="bar"`)
+	query5Res := &structs.TransactionArguments{
+		Fields: []string{"A", "B", "C"},
+		StartsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				OrFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							ExpressionFilter: &structs.ExpressionFilter{
+								LeftInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: nil,
+											ColumnName:  "status",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								RightInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: &utils.DtypeEnclosure{
+												Dtype:       utils.SS_DT_UNSIGNED_NUM,
+												StringVal:   "300",
+												UnsignedVal: uint64(300),
+												SignedVal:   int64(300),
+												FloatVal:    float64(300),
+											},
+											ColumnName: "",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								FilterOperator: utils.Equals,
+							},
+						},
+						{
+							ExpressionFilter: &structs.ExpressionFilter{
+								LeftInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: nil,
+											ColumnName:  "status",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								RightInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: &utils.DtypeEnclosure{
+												Dtype:     utils.SS_DT_STRING,
+												StringVal: "bar",
+											},
+											ColumnName: "",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								FilterOperator: utils.Equals,
+							},
+						},
+					},
+					NestedNodes: nil,
+				},
+			},
+		},
+		EndsWith: &structs.FilterStringExpr{
+			StringValue: "bar",
+		},
+	}
+
+	// CASE 6: Fields + StartWith is String Search Expression + endswith is Eval
+	query6 := []byte(`A=1 | transaction A B C startswith="status=foo OR status=bar AND action=login" endswith=eval(status<400)`)
+	query6Res := &structs.TransactionArguments{
+		Fields: []string{"A", "B", "C"},
+		StartsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				AndFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							ExpressionFilter: &structs.ExpressionFilter{
+								LeftInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: nil,
+											ColumnName:  "action",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								RightInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: &utils.DtypeEnclosure{
+												Dtype:     utils.SS_DT_STRING,
+												StringVal: "login",
+											},
+											ColumnName: "",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								FilterOperator: utils.Equals,
+							},
+						},
+					},
+					NestedNodes: []*structs.ASTNode{
+						{
+							OrFilterCondition: &structs.Condition{
+								FilterCriteria: []*structs.FilterCriteria{
+									{
+										ExpressionFilter: &structs.ExpressionFilter{
+											LeftInput: &structs.FilterInput{
+												Expression: &structs.Expression{
+													LeftInput: &structs.ExpressionInput{
+														ColumnValue: nil,
+														ColumnName:  "status",
+													},
+													ExpressionOp: utils.Add,
+													RightInput:   nil,
+												},
+											},
+											RightInput: &structs.FilterInput{
+												Expression: &structs.Expression{
+													LeftInput: &structs.ExpressionInput{
+														ColumnValue: &utils.DtypeEnclosure{
+															Dtype:     utils.SS_DT_STRING,
+															StringVal: "foo",
+														},
+														ColumnName: "",
+													},
+													ExpressionOp: utils.Add,
+													RightInput:   nil,
+												},
+											},
+											FilterOperator: utils.Equals,
+										},
+									},
+									{
+										ExpressionFilter: &structs.ExpressionFilter{
+											LeftInput: &structs.FilterInput{
+												Expression: &structs.Expression{
+													LeftInput: &structs.ExpressionInput{
+														ColumnValue: nil,
+														ColumnName:  "status",
+													},
+													ExpressionOp: utils.Add,
+													RightInput:   nil,
+												},
+											},
+											RightInput: &structs.FilterInput{
+												Expression: &structs.Expression{
+													LeftInput: &structs.ExpressionInput{
+														ColumnValue: &utils.DtypeEnclosure{
+															Dtype:     utils.SS_DT_STRING,
+															StringVal: "bar",
+														},
+														ColumnName: "",
+													},
+													ExpressionOp: utils.Add,
+													RightInput:   nil,
+												},
+											},
+											FilterOperator: utils.Equals,
+										},
+									},
+								},
+								NestedNodes: nil,
+							},
+						},
+					},
+				},
+			},
+		},
+		EndsWith: &structs.FilterStringExpr{
+			EvalBoolExpr: &structs.BoolExpr{
+				IsTerminal: true,
+				LeftValue: &structs.ValueExpr{
+					NumericExpr: &structs.NumericExpr{
+						IsTerminal:      true,
+						NumericExprMode: structs.NEMNumberField,
+						ValueIsField:    true,
+						Value:           "status",
+					},
+				},
+				RightValue: &structs.ValueExpr{
+					NumericExpr: &structs.NumericExpr{
+						IsTerminal:      true,
+						NumericExprMode: structs.NEMNumber,
+						ValueIsField:    false,
+						Value:           "400",
+					},
+				},
+				ValueOp: "<",
+			},
+		},
+	}
+
+	// CASE 7: Fileds + StartWith is Search Term (With Number) + endsWith is String Search Expression
+	query7 := []byte(`A=1 | transaction A B C startswith=(status>300 OR status=201) endswith="status=foo OR status=bar AND action=login"`)
+	query7Res := &structs.TransactionArguments{
+		Fields: []string{"A", "B", "C"},
+		StartsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				OrFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							ExpressionFilter: &structs.ExpressionFilter{
+								LeftInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: nil,
+											ColumnName:  "status",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								FilterOperator: utils.GreaterThan,
+								RightInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: &utils.DtypeEnclosure{
+												Dtype:       utils.SS_DT_UNSIGNED_NUM,
+												UnsignedVal: uint64(300),
+												SignedVal:   int64(300),
+												FloatVal:    float64(300),
+												StringVal:   "300",
+											},
+										},
+									},
+								},
+							},
+						},
+						{
+							ExpressionFilter: &structs.ExpressionFilter{
+								LeftInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: nil,
+											ColumnName:  "status",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								FilterOperator: utils.Equals,
+								RightInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: &utils.DtypeEnclosure{
+												Dtype:       utils.SS_DT_UNSIGNED_NUM,
+												UnsignedVal: uint64(201),
+												SignedVal:   int64(201),
+												FloatVal:    float64(201),
+												StringVal:   "201",
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+		EndsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				AndFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							ExpressionFilter: &structs.ExpressionFilter{
+								LeftInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: nil,
+											ColumnName:  "action",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								RightInput: &structs.FilterInput{
+									Expression: &structs.Expression{
+										LeftInput: &structs.ExpressionInput{
+											ColumnValue: &utils.DtypeEnclosure{
+												Dtype:     utils.SS_DT_STRING,
+												StringVal: "login",
+											},
+											ColumnName: "",
+										},
+										ExpressionOp: utils.Add,
+										RightInput:   nil,
+									},
+								},
+								FilterOperator: utils.Equals,
+							},
+						},
+					},
+					NestedNodes: []*structs.ASTNode{
+						{
+							OrFilterCondition: &structs.Condition{
+								FilterCriteria: []*structs.FilterCriteria{
+									{
+										ExpressionFilter: &structs.ExpressionFilter{
+											LeftInput: &structs.FilterInput{
+												Expression: &structs.Expression{
+													LeftInput: &structs.ExpressionInput{
+														ColumnValue: nil,
+														ColumnName:  "status",
+													},
+													ExpressionOp: utils.Add,
+													RightInput:   nil,
+												},
+											},
+											RightInput: &structs.FilterInput{
+												Expression: &structs.Expression{
+													LeftInput: &structs.ExpressionInput{
+														ColumnValue: &utils.DtypeEnclosure{
+															Dtype:     utils.SS_DT_STRING,
+															StringVal: "foo",
+														},
+														ColumnName: "",
+													},
+													ExpressionOp: utils.Add,
+													RightInput:   nil,
+												},
+											},
+											FilterOperator: utils.Equals,
+										},
+									},
+									{
+										ExpressionFilter: &structs.ExpressionFilter{
+											LeftInput: &structs.FilterInput{
+												Expression: &structs.Expression{
+													LeftInput: &structs.ExpressionInput{
+														ColumnValue: nil,
+														ColumnName:  "status",
+													},
+													ExpressionOp: utils.Add,
+													RightInput:   nil,
+												},
+											},
+											RightInput: &structs.FilterInput{
+												Expression: &structs.Expression{
+													LeftInput: &structs.ExpressionInput{
+														ColumnValue: &utils.DtypeEnclosure{
+															Dtype:     utils.SS_DT_STRING,
+															StringVal: "bar",
+														},
+														ColumnName: "",
+													},
+													ExpressionOp: utils.Add,
+													RightInput:   nil,
+												},
+											},
+											FilterOperator: utils.Equals,
+										},
+									},
+								},
+								NestedNodes: nil,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// CASE 8: Fields + StartsWith=OR String Clauses + EndsWith=OR Clauses
+	query8 := []byte(`A=1 | transaction A B C startswith=("GET" OR "POST1") endswith=("DELETE" OR "POST2")`)
+	query8Res := &structs.TransactionArguments{
+		Fields: []string{"A", "B", "C"},
+		StartsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				OrFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							MatchFilter: &structs.MatchFilter{
+								MatchColumn: "*",
+								MatchWords: [][]byte{
+									[]byte("GET"),
+								},
+								MatchOperator: utils.And,
+								MatchPhrase:   []byte("GET"),
+								MatchType:     structs.MATCH_PHRASE,
+							},
+						},
+						{
+							MatchFilter: &structs.MatchFilter{
+								MatchColumn: "*",
+								MatchWords: [][]byte{
+									[]byte("POST1"),
+								},
+								MatchOperator: utils.And,
+								MatchPhrase:   []byte("POST1"),
+								MatchType:     structs.MATCH_PHRASE,
+							},
+						},
+					},
+				},
+			},
+		},
+		EndsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				OrFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							MatchFilter: &structs.MatchFilter{
+								MatchColumn: "*",
+								MatchWords: [][]byte{
+									[]byte("DELETE"),
+								},
+								MatchOperator: utils.And,
+								MatchPhrase:   []byte("DELETE"),
+								MatchType:     structs.MATCH_PHRASE,
+							},
+						},
+						{
+							MatchFilter: &structs.MatchFilter{
+								MatchColumn: "*",
+								MatchWords: [][]byte{
+									[]byte("POST2"),
+								},
+								MatchOperator: utils.And,
+								MatchPhrase:   []byte("POST2"),
+								MatchType:     structs.MATCH_PHRASE,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	// CASE 9: Fields + StartsWith=AND String Clauses + EndsWith=Single String Clause
+	query9 := []byte(`A=1 | transaction A B C startswith=("GET" AND "POST1") endswith=("DELETE")`)
+	query9Res := &structs.TransactionArguments{
+		Fields: []string{"A", "B", "C"},
+		StartsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				AndFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							MatchFilter: &structs.MatchFilter{
+								MatchColumn: "*",
+								MatchWords: [][]byte{
+									[]byte("GET"),
+								},
+								MatchOperator: utils.And,
+								MatchPhrase:   []byte("GET"),
+								MatchType:     structs.MATCH_PHRASE,
+							},
+						},
+						{
+							MatchFilter: &structs.MatchFilter{
+								MatchColumn: "*",
+								MatchWords: [][]byte{
+									[]byte("POST1"),
+								},
+								MatchOperator: utils.And,
+								MatchPhrase:   []byte("POST1"),
+								MatchType:     structs.MATCH_PHRASE,
+							},
+						},
+					},
+				},
+			},
+		},
+		EndsWith: &structs.FilterStringExpr{
+			SearchNode: &structs.ASTNode{
+				AndFilterCondition: &structs.Condition{
+					FilterCriteria: []*structs.FilterCriteria{
+						{
+							MatchFilter: &structs.MatchFilter{
+								MatchColumn: "*",
+								MatchWords: [][]byte{
+									[]byte("DELETE"),
+								},
+								MatchOperator: utils.And,
+								MatchPhrase:   []byte("DELETE"),
+								MatchType:     structs.MATCH_PHRASE,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	queries := [][]byte{query1, query2, query3, query4, query5, query6, query7, query8, query9}
+	results := []*structs.TransactionArguments{query1Res, query2Res, query3Res, query4Res, query5Res, query6Res, query7Res, query8Res, query9Res}
+
+	for ind, query := range queries {
+		res, err := spl.Parse("", query)
+		assert.Nil(t, err)
+		filterNode := res.(ast.QueryStruct).SearchFilter
+		assert.NotNil(t, filterNode)
+
+		astNode, aggregator, err := pipesearch.ParseQuery(string(query), 0, "Splunk QL")
+		assert.Nil(t, err)
+		assert.NotNil(t, astNode)
+		assert.NotNil(t, aggregator)
+		assert.NotNil(t, aggregator.TransactionArguments)
+
+		transactionRequest := aggregator.TransactionArguments
+		assert.Equal(t, structs.TransactionType, aggregator.PipeCommandType)
+		assert.Equal(t, results[ind].Fields, transactionRequest.Fields)
+		assert.Equal(t, results[ind].StartsWith, transactionRequest.StartsWith)
+		assert.Equal(t, results[ind].EndsWith, transactionRequest.EndsWith)
+	}
 }

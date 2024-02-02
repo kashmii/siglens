@@ -20,12 +20,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
-
-	"github.com/siglens/siglens/pkg/common/dtypeutils"
 
 	jsoniter "github.com/json-iterator/go"
 	"github.com/siglens/siglens/pkg/alerts/alertutils"
@@ -265,6 +264,10 @@ func ProcessAlertsPipeSearchRequest(queryParams alertutils.QueryParams) int {
 
 		if aggs != nil && (aggs.GroupByRequest != nil || aggs.MeasureOperations != nil) {
 			sizeLimit = 0
+		} else if aggs.HasDedupBlockInChain() {
+			// Dedup needs to see all the matched records before it can return any
+			// of them when there's a sortby option.
+			sizeLimit = math.MaxUint64
 		}
 		qc := structs.InitQueryContextWithTableInfo(ti, sizeLimit, scrollFrom, orgid, false)
 		result := segment.ExecuteQuery(simpleNode, aggs, qid, qc)
@@ -316,6 +319,16 @@ func ProcessAlertsPipeSearchRequest(queryParams alertutils.QueryParams) int {
 }
 
 func ProcessPipeSearchRequest(ctx *fasthttp.RequestCtx, myid uint64) {
+	defer utils.DeferableAddAccessLogEntry(
+		time.Now(),
+		func() time.Time { return time.Now() },
+		"No-user", // TODO : Add logged in user when user auth is implemented
+		ctx.Request.URI().String(),
+		string(ctx.PostBody()),
+		func() int { return ctx.Response.StatusCode() },
+		false,
+		"access.log",
+	)
 
 	dbPanelId := utils.ExtractParamAsString(ctx.UserValue("dbPanel-id"))
 	queryStart := time.Now()
@@ -381,12 +394,20 @@ func ProcessPipeSearchRequest(ctx *fasthttp.RequestCtx, myid uint64) {
 
 	if aggs != nil && (aggs.GroupByRequest != nil || aggs.MeasureOperations != nil) {
 		sizeLimit = 0
+	} else if aggs.HasDedupBlockInChain() {
+		// Dedup needs to see all the matched records before it can return any
+		// of them when there's a sortby option.
+		sizeLimit = math.MaxUint64
 	}
 
 	// If MaxRows is used to limit the number of returned results, set `sizeLimit`
 	// to it. Currently MaxRows is only valid as the root QueryAggregators.
-	if aggs != nil && aggs.OutputTransforms != nil && aggs.OutputTransforms.MaxRows != 0 {
-		sizeLimit = aggs.OutputTransforms.MaxRows
+	if aggs != nil && aggs.Limit != 0 {
+		sizeLimit = uint64(aggs.Limit)
+	}
+	if queryLanguageType == "SQL" && aggs != nil && aggs.TableName != "*" {
+		indexNameIn = aggs.TableName
+		ti = structs.InitTableInfo(indexNameIn, myid, false) // Re-initialize ti with the updated indexNameIn
 	}
 
 	qc := structs.InitQueryContextWithTableInfo(ti, sizeLimit, scrollFrom, myid, false)
@@ -395,17 +416,6 @@ func ProcessPipeSearchRequest(ctx *fasthttp.RequestCtx, myid uint64) {
 	utils.WriteJsonResponse(ctx, httpRespOuter)
 
 	ctx.SetStatusCode(fasthttp.StatusOK)
-
-	// Writing to access.log in the following format
-	// timeStamp <logged-in user> <request URI> <request body> <response status code> <elapsed time in ms>
-	utils.AddAccessLogEntry(dtypeutils.AccessLogData{
-		TimeStamp:   time.Now().Format("2006-01-02 15:04:05"),
-		UserName:    "No-user", // TODO : Add logged in user when user auth is implemented
-		URI:         ctx.Request.URI().String(),
-		RequestBody: string(ctx.PostBody()),
-		StatusCode:  ctx.Response.StatusCode(),
-		Duration:    httpRespOuter.ElapedTimeMS,
-	}, "access.log")
 }
 
 func getQueryResponseJson(nodeResult *structs.NodeResult, indexName string, queryStart time.Time, sizeLimit uint64, qid uint64, aggs *structs.QueryAggregators, numRRCs uint64, dbPanelId string) PipeSearchResponseOuter {
@@ -462,6 +472,10 @@ func convertRRCsToJSONResponse(rrcs []*sutils.RecordResultContainer, sizeLimit u
 	if err != nil {
 		log.Errorf("qid=%d, convertRRCsToJSONResponse: failed to get allrecords from rrc, err=%v", qid, err)
 		return allJsons, allCols, err
+	}
+
+	if sizeLimit < uint64(len(allJsons)) {
+		allJsons = allJsons[:sizeLimit]
 	}
 	return allJsons, allCols, nil
 }

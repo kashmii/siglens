@@ -162,7 +162,7 @@ func simpleQueryTest(t *testing.T, numBuffers int, numEntriesForBuffer int, file
 	result = ExecuteQuery(columnNode, &QueryAggregators{}, 0, qc)
 	assert.NotNil(t, result, "Query ran successfully")
 	assert.Len(t, result.AllRecords, 0, "no column abc exists")
-	assert.NotEqual(t, 0, result.ErrList, "column not found errors MUST happend")
+	assert.NotEqual(t, 0, result.ErrList, "column not found errors MUST happened")
 }
 
 func wildcardQueryTest(t *testing.T, numBuffers int, numEntriesForBuffer int, fileCount int) {
@@ -342,6 +342,96 @@ func groupByQueryTest(t *testing.T, numBuffers int, numEntriesForBuffer int, fil
 			}
 		}
 	}
+}
+
+func timechartGroupByQueryTest(t *testing.T, numBuffers int, numEntriesForBuffer int, fileCount int) {
+	value1, _ := CreateDtypeEnclosure("value1", 0)
+	ti := structs.InitTableInfo("evts", 0, false)
+	allColumns := FilterCriteria{
+		ExpressionFilter: &ExpressionFilter{
+			LeftInput:      &FilterInput{Expression: &Expression{LeftInput: &ExpressionInput{ColumnName: "key1"}}},
+			FilterOperator: Equals,
+			RightInput:     &FilterInput{Expression: &Expression{LeftInput: &ExpressionInput{ColumnValue: value1}}},
+		},
+	}
+	simpleNode := &ASTNode{
+		AndFilterCondition: &Condition{FilterCriteria: []*FilterCriteria{&allColumns}},
+		TimeRange: &dtu.TimeRange{
+			StartEpochMs: 1,
+			EndEpochMs:   uint64(numEntriesForBuffer) + 1,
+		},
+	}
+
+	timechart := &TimechartExpr{
+		ByField: "key11",
+	}
+
+	// time range is [1, 11], so it should have 3 time range buckets: [1, 5), [5, 9), [9, 11]
+	simpleGroupBy := &QueryAggregators{
+		TimeHistogram: &TimeBucket{
+			IntervalMillis: 4,
+			StartTime:      1,
+			EndTime:        uint64(numEntriesForBuffer) + 1,
+			Timechart:      timechart,
+		},
+		GroupByRequest: &GroupByRequest{
+			GroupByColumns: []string{"timestamp"},
+			MeasureOperations: []*MeasureAggregator{
+				{MeasureCol: "key2", MeasureFunc: Avg},
+				{MeasureCol: "key8", MeasureFunc: Sum},
+			},
+			AggName:     "test",
+			BucketCount: 100,
+		},
+	}
+
+	mnames := make([]string, len(simpleGroupBy.GroupByRequest.MeasureOperations))
+	for i, mOp := range simpleGroupBy.GroupByRequest.MeasureOperations {
+		mnames[i] = mOp.String()
+	}
+	qc := structs.InitQueryContextWithTableInfo(ti, 10000, 0, 0, false)
+	result := ExecuteQuery(simpleNode, simpleGroupBy, 102, qc)
+	lenHist := len(result.Histogram["test"].Results)
+	assert.False(t, result.Histogram["test"].IsDateHistogram)
+	assert.Equal(t, 3, lenHist, "it should have 3 time range buckets: [1, 5), [5, 9), [9, 11]")
+	timeBucketsMap := map[string]struct{}{
+		"1": {},
+		"5": {},
+		"9": {},
+	}
+
+	totalentries := uint64(numEntriesForBuffer * fileCount * numBuffers)
+	sumRecord0 := uint64(0)
+	sumRecord1 := uint64(0)
+	for i := 0; i < lenHist; i++ {
+		bKey := result.Histogram["test"].Results[i].BucketKey
+		timestamp, ok := bKey.(string)
+		assert.True(t, ok)
+		_, exists := timeBucketsMap[timestamp]
+		assert.True(t, exists)
+		delete(timeBucketsMap, timestamp)
+
+		assert.Len(t, result.Histogram["test"].Results[i].StatRes, len(simpleGroupBy.GroupByRequest.MeasureOperations)*2)
+		log.Infof("bkey is %+v", bKey)
+
+		m := mnames[1]
+
+		res0, ok := result.Histogram["test"].Results[i].StatRes[m+": record-batch-0"]
+		assert.True(t, ok)
+		num1, err := res0.GetUIntValue()
+		assert.Nil(t, err)
+
+		res1, ok := result.Histogram["test"].Results[i].StatRes[m+": record-batch-1"]
+		assert.True(t, ok)
+		num2, err := res1.GetUIntValue()
+		assert.Nil(t, err)
+
+		sumRecord0 += num1
+		sumRecord1 += num2
+	}
+
+	assert.Equal(t, totalentries, sumRecord0)
+	assert.Equal(t, totalentries, sumRecord1)
 }
 
 func nestedQueryTest(t *testing.T, numBuffers int, numEntriesForBuffer int, fileCount int) {
@@ -1403,6 +1493,7 @@ func Test_Query(t *testing.T) {
 	wildcardQueryTest(t, numBuffers, numEntriesForBuffer, fileCount)
 	timeHistogramQueryTest(t, numBuffers, numEntriesForBuffer, fileCount)
 	groupByQueryTest(t, numBuffers, numEntriesForBuffer, fileCount)
+	timechartGroupByQueryTest(t, numBuffers, numEntriesForBuffer, fileCount)
 	nestedQueryTest(t, numBuffers, numEntriesForBuffer, fileCount)
 	nestedAggregationQueryTest(t, numBuffers, numEntriesForBuffer, fileCount)
 	nestedAggregationQueryWithGroupByTest(t, numBuffers, numEntriesForBuffer, fileCount)
@@ -1594,7 +1685,7 @@ func Test_EncodeDecodeBlockSummary(t *testing.T) {
 
 		// cnames are create in WriteMockColSegFile, we will only verify one of cnames
 		// cnames start from key0..key11
-		// key1 stores "value1", and the blockLen was calcualted by running thw writemock.. func with print statement
+		// key1 stores "value1", and the blockLen was calculated by running thw writemock.. func with print statement
 		assert.Equal(t, uint32(30), readAllBmh[uint16(i)].ColumnBlockLen["key1"])
 		assert.Equal(t, int64(i*30), readAllBmh[uint16(i)].ColumnBlockOffset["key1"])
 	}

@@ -6,7 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
-	"io/ioutil"
+	"io"
 
 	"github.com/siglens/siglens/pkg/es/writer"
 	"github.com/siglens/siglens/pkg/utils"
@@ -37,7 +37,7 @@ func ProcessTraceIngest(ctx *fasthttp.RequestCtx) {
 			return
 		}
 
-		data, err = ioutil.ReadAll(reader)
+		data, err = io.ReadAll(reader)
 		if err != nil {
 			setFailureResponse(ctx, fasthttp.StatusBadRequest, "Unable to gzip decompress the data")
 			return
@@ -138,7 +138,11 @@ func spanToJson(span *tracepb.Span, service string) ([]byte, error) {
 	result["dropped_attributes_count"] = uint64(span.DroppedAttributesCount)
 	result["dropped_events_count"] = uint64(span.DroppedEventsCount)
 	result["dropped_links_count"] = uint64(span.DroppedLinksCount)
-	result["status"] = span.Status.Code.String()
+	if span.Status != nil {
+		result["status"] = span.Status.Code.String()
+	} else {
+		result["status"] = "Unknown"
+	}
 
 	// Make a column for each attribute key.
 	for _, keyvalue := range span.Attributes {

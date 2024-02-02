@@ -11,6 +11,7 @@
 
 # Output of the go coverage tool, specifically when used with LiteIDE
 *.data
+siglens.db
 
 # Dependency directories (remove the comment below to include it)
 # vendor/
@@ -78,4 +79,5 @@ node_modules
 siglens
 
 # multinode testing
-ingest*/
+
+siglens.db

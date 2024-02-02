@@ -130,6 +130,7 @@ const gridOptions = {
     animateRows: true,
     readOnlyEdit: true,
     singleClickEdit: true,
+    headerHeight:32,
     defaultColDef: {
         initialWidth: 100,
         sortable: true,
@@ -172,7 +173,7 @@ const myCellRenderer= (params) => {
     let logString = '';
     if (typeof params.data === 'object' && params.data !== null){
         let value = params.data[params.colName]
-        if (value != ""){
+        if (value !== ""){
             if (Array.isArray(value)){
                 logString= JSON.stringify(JSON.unflatten(value), null, 2)
             }else{
@@ -213,7 +214,7 @@ function renderLogsGrid(columnOrder, hits){
         return {
             field: colName,
             hide: hideCol,
-            headerName: colName.toLowerCase(),
+            headerName: colName,
             cellRenderer: myCellRenderer,
             cellRendererParams : {
                 colName: colName
